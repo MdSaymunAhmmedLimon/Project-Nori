@@ -56,3 +56,29 @@ class PasswordChangeView(AuthThrottleMixin, generics.GenericAPIView):
         if isinstance(request.successful_authenticator, SessionAuthentication):
             update_session_auth_hash(request, user)
         return Response({"detail": "Password updated. Sign in again on your other devices."})
+
+
+class ReferralView(generics.GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from django.db.models import Sum
+        from .models import Referral, ReferralCode
+        from .serializers import ReferralItemSerializer
+        from .services import generate_unique_referral_code
+
+        ref_code, _ = ReferralCode.objects.get_or_create(
+            user=request.user,
+            defaults={"code": generate_unique_referral_code(request.user)},
+        )
+        referrals = Referral.objects.filter(referrer=request.user).select_related("referee")
+        completed = referrals.filter(status=Referral.Status.COMPLETED)
+        total_rewards = completed.aggregate(total=Sum("reward_amount"))["total"] or 0
+        return Response({
+            "referral_code": ref_code.code,
+            "total_referrals": referrals.count(),
+            "completed_referrals": completed.count(),
+            "total_rewards_earned": f"{float(total_rewards):.2f}",
+            "referrals": ReferralItemSerializer(referrals, many=True).data,
+        })
+

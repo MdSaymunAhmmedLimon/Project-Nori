@@ -1,9 +1,12 @@
+from decimal import Decimal
+
 from django.db import IntegrityError, transaction
 from rest_framework import serializers
 
+
 from accounts.serializers import WritableFieldsOnlyMixin
 
-from .models import DriverProfile, Vehicle
+from .models import DriverDocument, DriverProfile, PayoutRequest, Vehicle
 from .services import create_driver_profile, create_vehicle, require_editable_driver
 
 
@@ -54,10 +57,11 @@ class VehicleSerializer(WritableFieldsOnlyMixin, serializers.ModelSerializer):
     class Meta:
         model = Vehicle
         fields = (
-            "id", "driver", "license_plate", "make", "model", "color",
+            "id", "driver", "license_plate", "vehicle_class", "make", "model", "color",
             "year", "seats", "created_at", "updated_at",
         )
         read_only_fields = ("id", "driver", "created_at", "updated_at")
+
 
     def validate_license_plate(self, value):
         value = value.strip().upper()
@@ -92,3 +96,60 @@ class VehicleSerializer(WritableFieldsOnlyMixin, serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {"license_plate": "This license plate is already registered."}
             ) from exc
+
+
+class DriverDocumentSerializer(serializers.ModelSerializer):
+    """Serializer for driver document uploads (multipart/form-data)."""
+
+    class Meta:
+        model = DriverDocument
+        fields = (
+            "id", "doc_type", "file", "review_status", "review_note",
+            "uploaded_at", "reviewed_at",
+        )
+        read_only_fields = ("id", "review_status", "review_note", "uploaded_at", "reviewed_at")
+
+    def create(self, validated_data):
+        from rides.services import Conflict
+        user = self.context["request"].user
+        try:
+            profile = DriverProfile.objects.get(user=user)
+        except DriverProfile.DoesNotExist as exc:
+            raise serializers.ValidationError(
+                {"detail": "Create your driver profile first."}
+            ) from exc
+        # Replace existing document of same type instead of raising integrity error
+        existing = DriverDocument.objects.filter(driver=profile, doc_type=validated_data["doc_type"]).first()
+        if existing:
+            existing.file = validated_data["file"]
+            existing.review_status = DriverDocument.ReviewStatus.PENDING
+            existing.review_note = ""
+            existing.reviewed_at = None
+            existing.save(update_fields=["file", "review_status", "review_note", "reviewed_at"])
+            return existing
+        return DriverDocument.objects.create(driver=profile, **validated_data)
+
+
+
+class PayoutRequestSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PayoutRequest
+        fields = (
+            "id", "amount", "payout_method", "account_details",
+            "status", "admin_note", "requested_at", "processed_at",
+        )
+        read_only_fields = ("id", "status", "admin_note", "requested_at", "processed_at")
+
+
+class PayoutRequestInputSerializer(WritableFieldsOnlyMixin, serializers.Serializer):
+    amount = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal("10.00"))
+    payout_method = serializers.ChoiceField(choices=PayoutRequest.Method.choices)
+
+    account_details = serializers.CharField(max_length=200)
+
+
+class PayoutProcessInputSerializer(WritableFieldsOnlyMixin, serializers.Serializer):
+    action = serializers.ChoiceField(choices=["approve", "reject", "pay"])
+    admin_note = serializers.CharField(max_length=300, required=False, allow_blank=True, default="")
+
+

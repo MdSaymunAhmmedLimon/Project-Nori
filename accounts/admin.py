@@ -30,3 +30,21 @@ class UserAdmin(DjangoUserAdmin):
     def get_readonly_fields(self, request, obj=None):
         # Role changes require an explicit migration of associated driver data.
         return ("role",) if obj else ()
+
+
+
+from .models import Referral, ReferralCode
+
+
+@admin.register(ReferralCode)
+class ReferralCodeAdmin(admin.ModelAdmin):
+    list_display = ("user", "code", "created_at")
+    search_fields = ("user__username", "code")
+
+
+@admin.register(Referral)
+class ReferralAdmin(admin.ModelAdmin):
+    list_display = ("referrer", "referee", "status", "reward_amount", "created_at", "completed_at")
+    list_filter = ("status",)
+    search_fields = ("referrer__username", "referee__username")
+

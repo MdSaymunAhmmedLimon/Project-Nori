@@ -2,7 +2,9 @@
 
 import os
 from datetime import timedelta
+from decimal import Decimal
 from pathlib import Path
+
 
 from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
@@ -117,7 +119,10 @@ USE_I18N = True
 USE_TZ = True
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
+MEDIA_URL = "media/"
+MEDIA_ROOT = BASE_DIR / "media"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
 
 STATICFILES_DIRS = [BASE_DIR / "static"]
 LOGIN_URL = "/login/"
@@ -176,3 +181,16 @@ EMAIL_USE_SSL = os.environ.get("EMAIL_USE_SSL", "False").lower() in {"true", "1"
 EMAIL_TIMEOUT = 10
 DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", "Nori <noreply@localhost>")
 PASSWORD_RESET_TIMEOUT = 3600
+SURGE_PRICING_ENABLED = os.environ.get("SURGE_PRICING_ENABLED", "True").lower() in {"true", "1", "yes"}
+ADMINS = [("Operations", os.environ.get("ADMIN_EMAIL", "admin@localhost"))]
+RIDE_CANCELLATION_FEE = os.environ.get("RIDE_CANCELLATION_FEE", "50.00")
+CANCELLATION_GRACE_SECONDS = int(os.environ.get("CANCELLATION_GRACE_SECONDS", "120"))
+REFERRAL_CREDIT_AMOUNT = os.environ.get("REFERRAL_CREDIT_AMOUNT", "50.00")
+VEHICLE_CLASS_MULTIPLIERS = {
+    "MOTO": Decimal("0.65"),
+    "STANDARD": Decimal("1.00"),
+    "COMFORT": Decimal("1.30"),
+    "XL": Decimal("1.70"),
+}
+
+

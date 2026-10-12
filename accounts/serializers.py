@@ -40,14 +40,16 @@ class UserSerializer(WritableFieldsOnlyMixin, serializers.ModelSerializer):
 class RegistrationSerializer(WritableFieldsOnlyMixin, serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, trim_whitespace=False, max_length=128)
     role = serializers.ChoiceField(choices=User.Role.choices, default=User.Role.RIDER)
+    referral_code = serializers.CharField(required=False, allow_blank=True, default="", write_only=True)
 
     class Meta:
         model = User
         fields = (
             "id", "username", "email", "password", "first_name",
-            "last_name", "phone_number", "role",
+            "last_name", "phone_number", "role", "referral_code",
         )
         read_only_fields = ("id",)
+
 
     def validate_username(self, value):
         value = User.normalize_username(value)
@@ -62,8 +64,9 @@ class RegistrationSerializer(WritableFieldsOnlyMixin, serializers.ModelSerialize
         return value
 
     def validate(self, attrs):
-        user = User(**{key: value for key, value in attrs.items() if key != "password"})
+        user = User(**{key: value for key, value in attrs.items() if key not in ("password", "referral_code")})
         try:
+
             validate_password(attrs["password"], user=user)
         except DjangoValidationError as exc:
             raise serializers.ValidationError({"password": exc.messages}) from exc
@@ -105,3 +108,12 @@ class PasswordChangeSerializer(WritableFieldsOnlyMixin, serializers.Serializer):
 
     def save(self, **kwargs):
         return self.form.save()
+
+
+class ReferralItemSerializer(serializers.Serializer):
+    referee_username = serializers.CharField(source="referee.username")
+    status = serializers.CharField()
+    reward_amount = serializers.DecimalField(max_digits=10, decimal_places=2)
+    created_at = serializers.DateTimeField()
+    completed_at = serializers.DateTimeField(allow_null=True)
+

@@ -1,17 +1,36 @@
+from decimal import Decimal
+
 from django.db.models import Avg
 from django.utils import timezone
 from rest_framework import serializers
+
 
 from accounts.serializers import WritableFieldsOnlyMixin
 from drivers.models import DriverProfile
 from payments.models import Payment
 
-from .models import ASSIGNED_STATUSES, Rating, Ride, RideEvent, RideOffer, RideQuote
+from .models import (
+    ASSIGNED_STATUSES, CarpoolPassenger, CarpoolRide, Rating, Ride,
+    RideEvent, RideMessage, RideOffer, RideQuote, RideStop, RideTip,
+    SavedPlace, ScheduledRide, SOSAlert,
+)
 
 
 class CoordinatesSerializer(WritableFieldsOnlyMixin, serializers.Serializer):
     latitude = serializers.DecimalField(max_digits=9, decimal_places=6, min_value=-90, max_value=90)
     longitude = serializers.DecimalField(max_digits=9, decimal_places=6, min_value=-180, max_value=180)
+
+
+class StopInputSerializer(WritableFieldsOnlyMixin, serializers.Serializer):
+    label = serializers.CharField(max_length=200)
+    latitude = serializers.DecimalField(max_digits=9, decimal_places=6, min_value=-90, max_value=90)
+    longitude = serializers.DecimalField(max_digits=9, decimal_places=6, min_value=-180, max_value=180)
+
+
+class RideStopSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RideStop
+        fields = ("id", "stop_order", "label", "latitude", "longitude")
 
 
 class QuoteInputSerializer(WritableFieldsOnlyMixin, serializers.Serializer):
@@ -21,18 +40,24 @@ class QuoteInputSerializer(WritableFieldsOnlyMixin, serializers.Serializer):
     pickup_longitude = serializers.DecimalField(max_digits=9, decimal_places=6, min_value=-180, max_value=180)
     destination_latitude = serializers.DecimalField(max_digits=9, decimal_places=6, min_value=-90, max_value=90)
     destination_longitude = serializers.DecimalField(max_digits=9, decimal_places=6, min_value=-180, max_value=180)
+    vehicle_class = serializers.ChoiceField(choices=["STANDARD", "COMFORT", "XL", "MOTO"], default="STANDARD", required=False)
+    stops = StopInputSerializer(many=True, required=False, default=list)
 
 
 class QuoteSerializer(serializers.ModelSerializer):
+    stops = RideStopSerializer(many=True, read_only=True)
+
     class Meta:
         model = RideQuote
         exclude = ("rider",)
+
 
 
 class RequestRideSerializer(WritableFieldsOnlyMixin, serializers.Serializer):
     quote_id = serializers.UUIDField()
     request_id = serializers.UUIDField()
     payment_method = serializers.ChoiceField(choices=Ride.PaymentMethod.choices, default="CASH")
+    promo_code = serializers.CharField(max_length=20, required=False, allow_blank=True, default="")
 
 
 class ActionSerializer(WritableFieldsOnlyMixin, serializers.Serializer):
@@ -65,14 +90,21 @@ class RideSerializer(serializers.ModelSerializer):
     events = EventSerializer(many=True, read_only=True)
     ratings = RatingSerializer(many=True, read_only=True)
     payment = serializers.SerializerMethodField()
+    tip = serializers.SerializerMethodField()
 
     class Meta:
         model = Ride
         fields = (
             "id", "request_id", "status", "quote", "rider", "driver", "payment_method", "payment",
-            "cancellation_reason", "created_at", "updated_at", "accepted_at", "arrived_at",
-            "started_at", "completed_at", "cancelled_at", "events", "ratings",
+            "cancellation_fee", "cancellation_reason", "tip", "created_at", "updated_at",
+            "accepted_at", "arrived_at", "started_at", "completed_at", "cancelled_at", "events", "ratings",
         )
+
+    def get_tip(self, ride):
+        if hasattr(ride, "tip"):
+            return str(ride.tip.amount)
+        return None
+
 
     def person(self, user, *, contact=False):
         if not user:
@@ -119,3 +151,108 @@ class OfferSerializer(serializers.ModelSerializer):
     class Meta:
         model = RideOffer
         fields = ("id", "ride_id", "distance_km", "expires_at", "quote")
+
+
+class ScheduleRideInputSerializer(WritableFieldsOnlyMixin, serializers.Serializer):
+    quote_id = serializers.UUIDField()
+    payment_method = serializers.ChoiceField(choices=Ride.PaymentMethod.choices, default="CASH")
+    scheduled_for = serializers.DateTimeField()
+
+
+class ScheduledRideSerializer(serializers.ModelSerializer):
+    quote = QuoteSerializer(read_only=True)
+
+    class Meta:
+        model = ScheduledRide
+        fields = ("id", "quote", "payment_method", "scheduled_for", "ride", "cancelled_at", "created_at")
+        read_only_fields = ("id", "ride", "cancelled_at", "created_at")
+
+
+class PromoValidateSerializer(WritableFieldsOnlyMixin, serializers.Serializer):
+    code = serializers.CharField(max_length=20)
+    fare = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal("0.01"))
+
+
+
+class SOSInputSerializer(WritableFieldsOnlyMixin, serializers.Serializer):
+    message = serializers.CharField(max_length=500, required=False, allow_blank=True, default="")
+
+
+class SOSAlertSerializer(serializers.ModelSerializer):
+    raised_by = serializers.StringRelatedField()
+    resolved_by = serializers.StringRelatedField()
+
+    class Meta:
+        model = SOSAlert
+        fields = ("id", "ride", "raised_by", "message", "created_at", "resolved_at", "resolved_by")
+        read_only_fields = ("id", "created_at", "resolved_at", "resolved_by")
+
+
+class CarpoolPassengerSerializer(serializers.ModelSerializer):
+    rider = serializers.StringRelatedField()
+
+    class Meta:
+        model = CarpoolPassenger
+        fields = ("id", "rider", "pickup_label", "destination_label", "seats", "fare_paid", "status", "joined_at", "cancelled_at")
+        read_only_fields = ("id", "rider", "fare_paid", "joined_at", "cancelled_at")
+
+
+class CarpoolRideSerializer(serializers.ModelSerializer):
+    passengers = CarpoolPassengerSerializer(many=True, read_only=True)
+    ride_id = serializers.UUIDField(source="ride.id", read_only=True)
+
+    class Meta:
+        model = CarpoolRide
+        fields = ("id", "ride_id", "total_seats", "available_seats", "fare_per_seat", "is_open", "created_at", "passengers")
+        read_only_fields = ("id", "ride_id", "available_seats", "created_at")
+
+
+class CarpoolCreateSerializer(WritableFieldsOnlyMixin, serializers.Serializer):
+    total_seats = serializers.IntegerField(min_value=1, max_value=6, default=3)
+    fare_per_seat = serializers.DecimalField(max_digits=10, decimal_places=2, required=False, allow_null=True)
+
+
+class CarpoolJoinSerializer(WritableFieldsOnlyMixin, serializers.Serializer):
+    seats = serializers.IntegerField(min_value=1, max_value=6, default=1)
+    pickup_label = serializers.CharField(max_length=200)
+    destination_label = serializers.CharField(max_length=200)
+
+
+class RideTipInputSerializer(WritableFieldsOnlyMixin, serializers.Serializer):
+    amount = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal("1.00"))
+
+
+class RideTipSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RideTip
+        fields = ("id", "ride", "amount", "created_at")
+        read_only_fields = ("id", "ride", "created_at")
+
+
+class RideMessageInputSerializer(WritableFieldsOnlyMixin, serializers.Serializer):
+    content = serializers.CharField(max_length=500)
+
+
+class RideMessageSerializer(serializers.ModelSerializer):
+    sender_name = serializers.CharField(source="sender.username", read_only=True)
+
+    class Meta:
+        model = RideMessage
+        fields = ("id", "sender", "sender_name", "content", "created_at")
+        read_only_fields = ("id", "sender", "created_at")
+
+
+class SavedPlaceSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SavedPlace
+        fields = ("id", "label", "address", "latitude", "longitude", "created_at")
+        read_only_fields = ("id", "created_at")
+
+
+class SavedPlaceInputSerializer(WritableFieldsOnlyMixin, serializers.Serializer):
+    label = serializers.CharField(max_length=50)
+    address = serializers.CharField(max_length=200)
+    latitude = serializers.DecimalField(max_digits=9, decimal_places=6, min_value=-90, max_value=90)
+    longitude = serializers.DecimalField(max_digits=9, decimal_places=6, min_value=-180, max_value=180)
+
+

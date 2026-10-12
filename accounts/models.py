@@ -1,7 +1,11 @@
+from decimal import Decimal
+
+from django.conf import settings
 from django.contrib.auth.models import AbstractUser, UserManager as DjangoUserManager
 from django.core.validators import RegexValidator
 from django.db import models
 from django.db.models.functions import Lower
+
 
 
 class UserManager(DjangoUserManager):
@@ -50,3 +54,38 @@ class User(AbstractUser):
     def save(self, *args, **kwargs):
         self.email = type(self).objects.normalize_email(self.email)
         super().save(*args, **kwargs)
+
+
+class ReferralCode(models.Model):
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="referral_code"
+    )
+    code = models.CharField(max_length=15, unique=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.user.username} ({self.code})"
+
+
+class Referral(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending (awaiting first ride)"
+        COMPLETED = "COMPLETED", "Completed (rewarded)"
+
+    referrer = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="referrals_made"
+    )
+    referee = models.OneToOneField(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="referred_by"
+    )
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING)
+    reward_amount = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("50.00"))
+    created_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.referrer.username} -> {self.referee.username} ({self.get_status_display()})"
+
