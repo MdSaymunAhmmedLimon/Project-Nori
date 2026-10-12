@@ -1,0 +1,7 @@
+{% extends 'webapp/base.html' %}
+{% block title %}Welcome back · Nori{% endblock %}
+{% block content %}
+<section class="auth-layout wrap"><div class="auth-intro"><div class="eyebrow">GOOD TO SEE YOU AGAIN</div><h1>Back to<br>your <em>journey.</em></h1><p>Your next ride is just around the corner.</p><div class="auth-doodle" aria-hidden="true">↝</div></div><div class="auth-card"><h2>Welcome back</h2><p class="muted">Log in to your Nori account.</p>
+{% if rate_error %}<div class="form-error" role="alert">{{ rate_error }}</div>{% endif %}
+<form method="post">{% csrf_token %}{{ form.non_field_errors }}{% for field in form %}<div class="form-field"><label for="{{ field.id_for_label }}">{{ field.label }}</label>{{ field }}{{ field.errors }}</div>{% endfor %}<input type="hidden" name="next" value="{{ next }}"><button class="button full" type="submit">Log in <span aria-hidden="true">→</span></button></form><p class="auth-switch"><a href="{% url 'webapp:password_reset' %}">Forgot your password?</a></p><p class="auth-switch">New to Nori? <a href="{% url 'webapp:register' %}">Create an account</a></p></div></section>
+{% endblock %}

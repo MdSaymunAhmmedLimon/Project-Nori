@@ -1,0 +1,25 @@
+{% extends 'webapp/base.html' %}
+{% load static %}
+{% block title %}Trip receipt · Nori{% endblock %}
+{% block content %}
+<section class="receipt-page wrap">
+  <div class="receipt-actions"><a class="plain-link" href="{% url 'webapp:dashboard' %}?ride={{ ride.id }}">← Back to trip</a><button class="button secondary small" id="print-receipt" type="button" hidden>Print / save PDF</button></div>
+  <article class="panel receipt-document">
+    <div class="panel-heading"><div><div class="eyebrow">NORI · YOUR JOURNEY</div><h1>{% if payment.status == 'PAID' %}Trip receipt{% else %}Trip summary{% endif %}</h1></div><span class="pill {% if payment.status == 'PAID' %}success{% else %}warning{% endif %}">{{ payment.get_status_display }}</span></div>
+    <p class="muted receipt-reference">Trip {{ ride.id }}<br>Payment {{ payment.id }}</p>
+    <div class="route-summary"><small>PICKUP</small>{{ ride.quote.pickup_label }}<small>DESTINATION</small>{{ ride.quote.destination_label }}</div>
+    <dl class="receipt-details">
+      <div><dt>Rider</dt><dd>{% firstof ride.rider.get_full_name ride.rider.username %}</dd></div>
+      <div><dt>Driver</dt><dd>{% firstof ride.driver.get_full_name ride.driver.username '—' %}</dd></div>
+      <div><dt>Trip completed</dt><dd>{{ ride.completed_at|date:'M j, Y, H:i T' }}</dd></div>
+      <div><dt>Estimated distance</dt><dd>{{ ride.quote.distance_km }} km</dd></div>
+      <div><dt>Payment method</dt><dd>{{ payment.get_method_display }}</dd></div>
+      {% if payment.paid_at %}<div><dt>Paid on</dt><dd>{{ payment.paid_at|date:'M j, Y, H:i T' }}</dd></div>{% endif %}
+    </dl>
+    <div class="receipt-total"><span>Total fare</span><strong>{{ payment.currency }} {{ payment.amount|floatformat:2 }}</strong></div>
+    {% if driver_copy %}<dl class="receipt-details"><div><dt>Platform fee (included in fare)</dt><dd>{{ payment.currency }} {{ payment.platform_fee|floatformat:2 }}</dd></div><div><dt>Your net earnings</dt><dd>{{ payment.currency }} {{ driver_net|floatformat:2 }}</dd></div></dl>{% endif %}
+    <p class="form-hint">{% if payment.status == 'PAID' %}Payment received. Thank you for riding with Nori.{% else %}Payment is still pending. This summary is not confirmation of payment.{% endif %}</p>
+  </article>
+</section>
+{% endblock %}
+{% block scripts %}<script src="{% static 'webapp/receipt.js' %}" defer></script>{% endblock %}

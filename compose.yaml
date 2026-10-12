@@ -1,0 +1,60 @@
+x-app: &app
+  build: .
+  env_file: .env
+  environment:
+    DJANGO_SETTINGS_MODULE: ride_sharing_app.settings
+    DB_HOST: db
+    DB_PORT: 5432
+    REDIS_URL: redis://redis:6379/0
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${DB_NAME:-ride_sharing}
+      POSTGRES_USER: ${DB_USER:-ride_sharing}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env before starting}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+  migrate:
+    <<: *app
+    command: ["python", "manage.py", "migrate", "--noinput"]
+    restart: "no"
+  web:
+    <<: *app
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    command: ["sh", "-c", "python manage.py collectstatic --noinput && exec daphne -b 0.0.0.0 -p 8000 ride_sharing_app.asgi:application"]
+    ports:
+      - "127.0.0.1:8000:8000"
+  dispatcher:
+    <<: *app
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    command: ["python", "manage.py", "dispatch_rides", "--loop"]
+
+volumes:
+  postgres_data:

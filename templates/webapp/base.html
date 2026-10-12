@@ -1,0 +1,40 @@
+{% load static %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#113e36">
+  <meta name="description" content="Nori connects riders and drivers for everyday city journeys.">
+  <meta property="og:title" content="{% block og_title %}Nori · A better way to go{% endblock %}">
+  <meta property="og:description" content="{% block og_description %}Nori connects riders and drivers for everyday city journeys.{% endblock %}">
+  <meta property="og:type" content="website">
+  <meta name="twitter:card" content="summary">
+  <meta name="robots" content="{% block robots %}index, follow{% endblock %}">
+  <title>{% block title %}Nori · A better way to go{% endblock %}</title>
+  <link rel="icon" href="{% static 'webapp/mark.svg' %}" type="image/svg+xml">
+  <link rel="stylesheet" href="{% static 'webapp/style.css' %}">
+  {% block head %}{% endblock %}
+</head>
+<body class="{% block body_class %}{% endblock %}">
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <a class="brand" href="{% url 'webapp:home' %}" aria-label="Nori home"><span class="brand-mark">n</span>nori<span class="brand-dot">.</span></a>
+    <nav id="site-nav" aria-label="Main navigation">
+      {% if user.is_authenticated %}
+        <a href="{% url 'webapp:dashboard' %}">My dashboard</a>
+        {% if user.is_staff %}<a href="{% url 'webapp:operations' %}">Operations</a>{% endif %}
+        <form method="post" action="{% url 'webapp:logout' %}" class="inline-form">{% csrf_token %}<button class="text-button" type="submit">Log out</button></form>
+      {% else %}
+        <a href="{% url 'webapp:register' %}?role=driver" class="driver-link">Become a driver <span aria-hidden="true">↗</span></a>
+        <a href="{% url 'webapp:login' %}">Log in</a>
+        <a href="{% url 'webapp:register' %}" class="button small">Get started <span aria-hidden="true">↗</span></a>
+      {% endif %}
+    </nav>
+    <button class="nav-toggle" id="nav-toggle" aria-label="Toggle navigation" aria-expanded="false" aria-controls="site-nav">☰</button>
+  </header>
+  <main id="main">{% block content %}{% endblock %}</main>
+  <script>document.getElementById('nav-toggle')?.addEventListener('click',function(){var nav=document.getElementById('site-nav');var open=nav.classList.toggle('open');this.setAttribute('aria-expanded',open);});</script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

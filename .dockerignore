@@ -1,0 +1,12 @@
+.venv
+.vercel
+.local
+.git
+.idea
+.env
+.env.*
+__pycache__
+*.pyc
+*.sqlite3
+artifacts
+staticfiles

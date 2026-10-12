@@ -1,0 +1,10 @@
+{% extends 'webapp/base.html' %}
+{% block title %}{{ heading }} · Nori{% endblock %}
+{% block content %}
+<section class="auth-layout wrap">
+  <div class="auth-intro"><div class="eyebrow">YOUR ACCOUNT</div><h1>Your next<br> <em>chapter.</em></h1><div class="auth-doodle" aria-hidden="true">↝</div></div>
+  <div class="auth-card"><h2>{{ heading }}</h2><p class="muted">{{ description }}</p>
+    {% if user.is_authenticated %}<a class="button full" href="{% url 'webapp:dashboard' %}">Return to dashboard</a>{% else %}<a class="button full" href="{% url 'webapp:login' %}">Back to login</a>{% endif %}
+  </div>
+</section>
+{% endblock %}
