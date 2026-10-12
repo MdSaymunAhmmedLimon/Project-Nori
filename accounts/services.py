@@ -18,8 +18,15 @@ def generate_unique_referral_code(user):
 
 
 @transaction.atomic
-def register_user(*, password, referral_code="", **user_data):
+def register_user(*, password, referral_code="", security_question="", security_answer="", **user_data):
     user = get_user_model().objects.create_user(password=password, **user_data)
+    if security_question:
+        user.security_question = security_question
+    if security_answer:
+        user.set_security_answer(security_answer)
+    if security_question or security_answer:
+        user.save(update_fields=["security_question", "security_answer"])
+
     code = generate_unique_referral_code(user)
     ReferralCode.objects.get_or_create(user=user, defaults={"code": code})
 
@@ -28,3 +35,4 @@ def register_user(*, password, referral_code="", **user_data):
         if ref and ref.user_id != user.id:
             Referral.objects.get_or_create(referee=user, defaults={"referrer": ref.user})
     return user
+

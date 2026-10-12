@@ -25,6 +25,14 @@ class User(AbstractUser):
         RIDER = "RIDER", "Rider"
         DRIVER = "DRIVER", "Driver"
 
+    SECURITY_QUESTION_CHOICES = [
+        ("What was the name of your first pet?", "What was the name of your first pet?"),
+        ("In what city were you born?", "In what city were you born?"),
+        ("What was the make of your first car?", "What was the make of your first car?"),
+        ("What was your childhood nickname?", "What was your childhood nickname?"),
+        ("What is your mother's maiden name?", "What is your mother's maiden name?"),
+    ]
+
     email = models.EmailField(unique=True)
     role = models.CharField(max_length=6, choices=Role.choices, default=Role.RIDER)
     phone_number = models.CharField(
@@ -36,6 +44,17 @@ class User(AbstractUser):
                 "Use an international phone number, e.g. +8801712345678.",
             )
         ],
+    )
+    security_question = models.CharField(
+        max_length=255,
+        blank=True,
+        choices=SECURITY_QUESTION_CHOICES,
+        help_text="Security question for password recovery without email.",
+    )
+    security_answer = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Hashed answer to the security question.",
     )
     objects = UserManager()
 
@@ -50,6 +69,19 @@ class User(AbstractUser):
                 condition=~models.Q(email=""), name="accounts_user_email_not_empty"
             ),
         ]
+
+    def set_security_answer(self, raw_answer):
+        from django.contrib.auth.hashers import make_password
+        if raw_answer:
+            self.security_answer = make_password(raw_answer.strip().lower())
+        else:
+            self.security_answer = ""
+
+    def check_security_answer(self, raw_answer):
+        from django.contrib.auth.hashers import check_password
+        if not self.security_answer or not raw_answer:
+            return False
+        return check_password(raw_answer.strip().lower(), self.security_answer)
 
     def save(self, *args, **kwargs):
         self.email = type(self).objects.normalize_email(self.email)

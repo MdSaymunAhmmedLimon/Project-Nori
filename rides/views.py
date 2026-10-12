@@ -14,19 +14,29 @@ from .models import (
 from .serializers import (
     ActionSerializer, CarpoolCreateSerializer, CarpoolJoinSerializer,
     CarpoolPassengerSerializer, CarpoolRideSerializer, OfferSerializer,
-    PromoValidateSerializer, QuoteInputSerializer, QuoteSerializer,
-    RatingInputSerializer, RatingSerializer, RequestRideSerializer,
-    RideMessageInputSerializer, RideMessageSerializer, RideSerializer,
-    RideTipInputSerializer, RideTipSerializer, SavedPlaceInputSerializer,
-    SavedPlaceSerializer, ScheduleRideInputSerializer,
-    ScheduledRideSerializer, SOSAlertSerializer, SOSInputSerializer,
+    PlaceItemSerializer, PromoValidateSerializer, QuoteInputSerializer,
+    QuoteSerializer, RatingInputSerializer, RatingSerializer,
+    RequestRideSerializer, RideMessageInputSerializer, RideMessageSerializer,
+    RideSerializer, RideTipInputSerializer, RideTipSerializer,
+    SavedPlaceInputSerializer, SavedPlaceSerializer,
+    ScheduleRideInputSerializer, ScheduledRideSerializer, SOSAlertSerializer,
+    SOSInputSerializer,
 )
-
-
 
 
 def own_rides(user):
     return Ride.objects.filter(Q(rider=user) | Q(driver=user)).select_related("quote", "rider", "driver", "payment").prefetch_related("events", "ratings")
+
+
+class PlaceSearchView(APIView):
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "rides"
+
+    def get(self, request):
+        from .places import search_places
+        q = request.query_params.get("q", "")
+        results = search_places(q, user=request.user)
+        return Response(PlaceItemSerializer(results, many=True).data)
 
 
 class QuoteView(APIView):
@@ -34,9 +44,10 @@ class QuoteView(APIView):
     throttle_scope = "rides"
 
     def post(self, request):
-        serializer = QuoteInputSerializer(data=request.data)
+        serializer = QuoteInputSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         return Response(QuoteSerializer(services.create_quote(request.user, serializer.validated_data)).data, status=201)
+
 
 
 class RideList(generics.ListAPIView):
@@ -207,11 +218,15 @@ class CarpoolList(generics.ListAPIView):
     serializer_class = CarpoolRideSerializer
 
     def get_queryset(self):
+        from django.conf import settings
+        if not getattr(settings, "ALLOW_MULTIPLE_RIDERS_PER_TRIP", False):
+            return CarpoolRide.objects.none()
         return CarpoolRide.objects.filter(
             is_open=True,
             available_seats__gt=0,
             ride__status__in=ACTIVE_STATUSES,
         ).select_related("ride__quote").prefetch_related("passengers")
+
 
 
 class EnableCarpool(APIView):

@@ -28,25 +28,47 @@ class WritableFieldsOnlyMixin:
 
 
 class UserSerializer(WritableFieldsOnlyMixin, serializers.ModelSerializer):
+    security_question = serializers.ChoiceField(
+        choices=User.SECURITY_QUESTION_CHOICES, required=False, allow_blank=True
+    )
+    security_answer = serializers.CharField(
+        write_only=True, required=False, allow_blank=True, max_length=255
+    )
+
     class Meta:
         model = User
         fields = (
             "id", "username", "email", "first_name", "last_name",
-            "phone_number", "role", "date_joined",
+            "phone_number", "role", "date_joined", "security_question",
+            "security_answer",
         )
         read_only_fields = ("id", "username", "email", "role", "date_joined")
+
+    def update(self, instance, validated_data):
+        answer = validated_data.pop("security_answer", None)
+        if answer:
+            instance.set_security_answer(answer)
+        return super().update(instance, validated_data)
+
 
 
 class RegistrationSerializer(WritableFieldsOnlyMixin, serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, trim_whitespace=False, max_length=128)
     role = serializers.ChoiceField(choices=User.Role.choices, default=User.Role.RIDER)
     referral_code = serializers.CharField(required=False, allow_blank=True, default="", write_only=True)
+    security_question = serializers.ChoiceField(
+        choices=User.SECURITY_QUESTION_CHOICES, required=False, allow_blank=True, default=""
+    )
+    security_answer = serializers.CharField(
+        write_only=True, required=False, allow_blank=True, default="", max_length=255
+    )
 
     class Meta:
         model = User
         fields = (
             "id", "username", "email", "password", "first_name",
             "last_name", "phone_number", "role", "referral_code",
+            "security_question", "security_answer",
         )
         read_only_fields = ("id",)
 
@@ -64,7 +86,7 @@ class RegistrationSerializer(WritableFieldsOnlyMixin, serializers.ModelSerialize
         return value
 
     def validate(self, attrs):
-        user = User(**{key: value for key, value in attrs.items() if key not in ("password", "referral_code")})
+        user = User(**{key: value for key, value in attrs.items() if key not in ("password", "referral_code", "security_answer")})
         try:
 
             validate_password(attrs["password"], user=user)
@@ -116,4 +138,46 @@ class ReferralItemSerializer(serializers.Serializer):
     reward_amount = serializers.DecimalField(max_digits=10, decimal_places=2)
     created_at = serializers.DateTimeField()
     completed_at = serializers.DateTimeField(allow_null=True)
+
+
+class SecurityQuestionRequestSerializer(WritableFieldsOnlyMixin, serializers.Serializer):
+    username = serializers.CharField(max_length=150)
+
+
+class ResetPasswordWithAnswerSerializer(WritableFieldsOnlyMixin, serializers.Serializer):
+    username = serializers.CharField(max_length=150)
+    security_answer = serializers.CharField(write_only=True, max_length=255)
+    new_password1 = serializers.CharField(write_only=True, trim_whitespace=False, max_length=128)
+    new_password2 = serializers.CharField(write_only=True, trim_whitespace=False, max_length=128)
+
+    def validate(self, attrs):
+        username = attrs.get("username", "").strip()
+        try:
+            user = User.objects.get(username__iexact=username)
+        except User.DoesNotExist:
+            raise serializers.ValidationError({"username": "No account found with this username."})
+
+        if not user.security_question or not user.security_answer:
+            raise serializers.ValidationError({"security_answer": "No security question is set for this account."})
+
+        if not user.check_security_answer(attrs.get("security_answer")):
+            raise serializers.ValidationError({"security_answer": "Incorrect answer to security question."})
+
+        if attrs["new_password1"] != attrs["new_password2"]:
+            raise serializers.ValidationError({"new_password2": "The passwords do not match."})
+
+        try:
+            validate_password(attrs["new_password1"], user=user)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError({"new_password1": exc.messages}) from exc
+
+        attrs["user"] = user
+        return attrs
+
+    def save(self):
+        user = self.validated_data["user"]
+        user.set_password(self.validated_data["new_password1"])
+        user.save()
+        return user
+
 

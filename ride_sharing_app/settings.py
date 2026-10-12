@@ -192,5 +192,7 @@ VEHICLE_CLASS_MULTIPLIERS = {
     "COMFORT": Decimal("1.30"),
     "XL": Decimal("1.70"),
 }
+ALLOW_MULTIPLE_RIDERS_PER_TRIP = os.environ.get("ALLOW_MULTIPLE_RIDERS_PER_TRIP", "False").lower() in {"true", "1", "yes"}
+
 
 

@@ -1,20 +1,13 @@
-import re
 import secrets
-from unittest.mock import patch
-from urllib.parse import urlsplit
 
 from django.contrib.auth import get_user_model
-from django.contrib.auth.tokens import default_token_generator
-from django.core import mail
 from django.core.cache import cache
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
-from django.utils.encoding import force_bytes
-from django.utils.http import urlsafe_base64_encode
 from rest_framework_simplejwt.tokens import RefreshToken
 
 
-@override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend", PUBLIC_BASE_URL="https://nori.example", DEBUG=False)
+@override_settings(DEBUG=False)
 class PasswordTests(TestCase):
     def setUp(self):
         cache.clear()
@@ -22,18 +15,15 @@ class PasswordTests(TestCase):
         self.user = get_user_model().objects.create_user(
             username="password_rider", email="password@example.com", password=self.password,
         )
+        self.user.security_question = "What was the name of your first pet?"
+        self.user.set_security_answer("Fluffy")
+        self.user.save()
         self.new_password = secrets.token_urlsafe(24)
 
     def password_data(self, **changes):
         data = {"old_password": self.password, "new_password1": self.new_password, "new_password2": self.new_password}
         data.update(changes)
         return data
-
-    def reset_link(self):
-        return reverse("webapp:password_reset_confirm", kwargs={
-            "uidb64": urlsafe_base64_encode(force_bytes(self.user.pk)),
-            "token": default_token_generator.make_token(self.user),
-        })
 
     def assert_tokens_revoked(self, refresh):
         headers = {"HTTP_AUTHORIZATION": f"Bearer {refresh.access_token}"}
@@ -70,65 +60,48 @@ class PasswordTests(TestCase):
     def test_password_posts_require_csrf_and_change_requires_login(self):
         client = Client(enforce_csrf_checks=True)
         self.assertEqual(client.get(reverse("webapp:password_change")).status_code, 302)
-        self.assertEqual(client.post(reverse("webapp:password_reset"), {"email": self.user.email}).status_code, 403)
+        self.assertEqual(client.post(reverse("webapp:password_reset"), {"username": self.user.username}).status_code, 403)
         client.force_login(self.user)
         self.assertEqual(client.post(reverse("webapp:password_change"), self.password_data()).status_code, 403)
 
-    def test_reset_email_uses_public_origin_and_unknown_email_has_same_response(self):
-        responses = []
-        for email in (self.user.email.upper(), "absent@example.com"):
-            responses.append(self.client.post(reverse("webapp:password_reset"), {"email": email}, follow=True))
-        self.assertEqual(responses[0].content, responses[1].content)
-        self.assertEqual(len(mail.outbox), 1)
-        self.assertEqual(mail.outbox[0].to, [self.user.email])
-        self.assertIn("https://nori.example/password/reset/", mail.outbox[0].body)
-        self.assertNotIn("testserver", mail.outbox[0].body)
+    def test_security_question_lookup_and_verification_resets_password(self):
+        # Step 1: Lookup by username
+        response = self.client.post(reverse("webapp:password_reset"), {"username": self.user.username})
+        self.assertRedirects(response, f"{reverse('webapp:password_reset_verify')}?username={self.user.username}")
 
-    @override_settings(DEBUG=True)
-    def test_local_reset_link_preserves_custom_port(self):
-        self.client.post(reverse("webapp:password_reset"), {"email": self.user.email}, HTTP_HOST="localhost:8123")
-        self.assertIn("http://localhost:8123/password/reset/", mail.outbox[0].body)
-
-    def test_inactive_and_unusable_password_accounts_do_not_receive_email(self):
-        self.user.is_active = False
-        self.user.save()
-        self.client.post(reverse("webapp:password_reset"), {"email": self.user.email})
-        self.user.is_active = True
-        self.user.set_unusable_password()
-        self.user.save()
-        self.client.post(reverse("webapp:password_reset"), {"email": self.user.email})
-        self.assertEqual(len(mail.outbox), 0)
-
-    def test_reset_link_is_one_use_and_revokes_existing_credentials(self):
-        refresh = RefreshToken.for_user(self.user)
-        other = Client()
-        other.force_login(self.user)
-        self.client.post(reverse("webapp:password_reset"), {"email": self.user.email})
-        link = urlsplit(re.search(r"https://\S+", mail.outbox[0].body)[0]).path
-        response = self.client.get(link)
-        form_url = response.url
-        self.assertIn("set-password", form_url)
-        response = self.client.post(form_url, {key: value for key, value in self.password_data().items() if key != "old_password"})
-        self.assertRedirects(response, reverse("webapp:password_reset_complete"))
-        self.user.refresh_from_db()
-        self.assertTrue(self.user.check_password(self.new_password))
-        self.assertFalse(self.user.check_password(self.password))
-        self.assertEqual(other.get("/api/auth/me/").status_code, 401)
-        self.assert_tokens_revoked(refresh)
-        self.assertContains(self.client.get(link), "expired or has already been used")
-        self.assertTrue(self.client.login(username=self.user.username, password=self.new_password))
-
-    def test_invalid_and_expired_reset_links_cannot_change_password(self):
-        self.assertContains(self.client.get("/password/reset/invalid/invalid/"), "Request a new link")
-        link = self.reset_link()
-        timestamp = default_token_generator._num_seconds(default_token_generator._now())
-        with patch.object(default_token_generator, "_num_seconds", return_value=timestamp + 3601):
-            self.assertContains(self.client.get(link), "Request a new link")
+        # Step 2: Verification with wrong answer fails
+        verify_url = reverse("webapp:password_reset_verify")
+        wrong_data = {
+            "username": self.user.username,
+            "security_answer": "WrongAnswer",
+            "new_password1": self.new_password,
+            "new_password2": self.new_password,
+        }
+        res_wrong = self.client.post(verify_url, wrong_data)
+        self.assertContains(res_wrong, "Incorrect answer")
         self.user.refresh_from_db()
         self.assertTrue(self.user.check_password(self.password))
 
+        # Step 3: Verification with correct answer (case-insensitive) succeeds
+        correct_data = {
+            "username": self.user.username,
+            "security_answer": "fluffy",  # lower case test
+            "new_password1": self.new_password,
+            "new_password2": self.new_password,
+        }
+        res_correct = self.client.post(verify_url, correct_data)
+        self.assertRedirects(res_correct, reverse("webapp:password_reset_complete"))
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password(self.new_password))
+        self.assertFalse(self.user.check_password(self.password))
+
+    def test_security_question_lookup_unknown_user_shows_error(self):
+        response = self.client.post(reverse("webapp:password_reset"), {"username": "nonexistent_user"})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "No account found")
+
     def test_reset_requests_are_rate_limited(self):
         for _ in range(30):
-            self.client.post(reverse("webapp:password_reset"), {"email": "absent@example.com"})
-        self.assertEqual(self.client.post(reverse("webapp:password_reset"), {"email": self.user.email}).status_code, 429)
-        self.assertEqual(len(mail.outbox), 0)
+            self.client.post(reverse("webapp:password_reset"), {"username": "nonexistent_user"})
+        self.assertEqual(self.client.post(reverse("webapp:password_reset"), {"username": self.user.username}).status_code, 429)
+

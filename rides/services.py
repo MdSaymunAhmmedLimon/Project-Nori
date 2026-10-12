@@ -432,6 +432,8 @@ def cancel_scheduled_ride(user, scheduled_id):
 @transaction.atomic
 def create_carpool(user, ride_id, *, total_seats=3, fare_per_seat=None):
     """Enable carpooling on an active ride."""
+    if not getattr(settings, "ALLOW_MULTIPLE_RIDERS_PER_TRIP", False):
+        raise Conflict("Only one person can book any trip. Multiple riders per trip are not permitted.")
     ride = Ride.objects.select_for_update().select_related("quote").filter(pk=ride_id).first()
     if not ride or user.pk not in {ride.rider_id, ride.driver_id}:
         raise NotFound("Ride not found.")
@@ -463,6 +465,8 @@ def create_carpool(user, ride_id, *, total_seats=3, fare_per_seat=None):
 def join_carpool(user, carpool_id, *, seats=1, pickup_label, destination_label):
     """Rider joins an existing carpool."""
     require_role(user, "RIDER")
+    if not getattr(settings, "ALLOW_MULTIPLE_RIDERS_PER_TRIP", False):
+        raise Conflict("Only one person can book any trip. Multiple riders cannot join or share this trip.")
     seats = int(seats)
     if seats < 1:
         raise ValidationError({"seats": "Must request at least 1 seat."})

@@ -11,7 +11,11 @@ from rest_framework_simplejwt.views import (
     TokenRefreshView,
 )
 
-from .serializers import AccountTokenRefreshSerializer, PasswordChangeSerializer, RegistrationSerializer, UserSerializer
+from .serializers import (
+    AccountTokenRefreshSerializer, PasswordChangeSerializer,
+    RegistrationSerializer, ResetPasswordWithAnswerSerializer,
+    SecurityQuestionRequestSerializer, UserSerializer,
+)
 
 
 class AuthThrottleMixin:
@@ -81,4 +85,52 @@ class ReferralView(generics.GenericAPIView):
             "total_rewards_earned": f"{float(total_rewards):.2f}",
             "referrals": ReferralItemSerializer(referrals, many=True).data,
         })
+
+
+class SecurityQuestionView(AuthThrottleMixin, generics.GenericAPIView):
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+    serializer_class = SecurityQuestionRequestSerializer
+
+    def get(self, request):
+        username = request.query_params.get("username", "").strip()
+        if not username:
+            return Response({"username": "Username query parameter is required."}, status=400)
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        user = User.objects.filter(username__iexact=username).first()
+        if not user or not user.security_question:
+            return Response({"detail": "User not found or no security question is set for this account."}, status=404)
+        return Response({
+            "username": user.username,
+            "security_question": user.security_question,
+        })
+
+    def post(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        username = serializer.validated_data["username"]
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        user = User.objects.filter(username__iexact=username).first()
+        if not user or not user.security_question:
+            return Response({"detail": "User not found or no security question is set for this account."}, status=404)
+        return Response({
+            "username": user.username,
+            "security_question": user.security_question,
+        })
+
+
+@method_decorator(sensitive_post_parameters(), name="dispatch")
+class ResetWithSecurityAnswerView(AuthThrottleMixin, generics.GenericAPIView):
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+    serializer_class = ResetPasswordWithAnswerSerializer
+
+    def post(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response({"detail": "Password has been reset successfully."})
+
 

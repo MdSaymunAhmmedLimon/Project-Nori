@@ -7,6 +7,7 @@ from django.core.cache import cache
 from django.core.management import call_command
 from django.urls import reverse
 from django.utils import timezone
+from django.test import override_settings
 from rest_framework.test import APITestCase
 
 from drivers.models import DriverProfile, Vehicle
@@ -214,6 +215,7 @@ class RidesNewFeaturesTests(APITestCase):
         self.assertIsNotNone(resolve_resp.data["resolved_at"])
 
     # 6. Carpooling / Ride Sharing
+    @override_settings(ALLOW_MULTIPLE_RIDERS_PER_TRIP=True)
     def test_carpool_workflow(self):
         quote = self.create_quote(fare=Decimal("300.00"))
         ride = Ride.objects.create(
@@ -261,3 +263,49 @@ class RidesNewFeaturesTests(APITestCase):
 
         carpool.refresh_from_db()
         self.assertEqual(carpool.available_seats, 3)
+
+    def test_only_one_person_can_book_trip_and_no_multiple_riders(self):
+        # By default ALLOW_MULTIPLE_RIDERS_PER_TRIP is False:
+        quote = self.create_quote(fare=Decimal("300.00"))
+        ride = Ride.objects.create(
+            rider=self.rider,
+            driver=self.driver,
+            quote=quote,
+            request_id=uuid.uuid4(),
+            status=Ride.Status.ACCEPTED,
+        )
+
+        # 1. Enabling multi-rider / carpool on a trip is rejected
+        self.client.force_authenticate(self.rider)
+        enable_url = reverse("rides:enable-carpool", kwargs={"pk": str(ride.id)})
+        carpool_resp = self.client.post(enable_url, {"total_seats": 3, "fare_per_seat": "100.00"})
+        self.assertEqual(carpool_resp.status_code, 409)
+        self.assertIn("Only one person can book any trip", carpool_resp.data["detail"])
+
+        # 2. Carpool list is empty
+        list_resp = self.client.get(reverse("rides:carpool-list"))
+        self.assertEqual(list_resp.status_code, 200)
+        self.assertEqual(len(list_resp.data.get("results", list_resp.data)), 0)
+
+        # 3. Rider cannot request a second active ride
+        new_quote = self.create_quote(fare=Decimal("150.00"))
+        req_resp = self.client.post(reverse("rides:list"), {
+            "quote_id": str(new_quote.id),
+            "request_id": str(uuid.uuid4()),
+            "payment_method": "CASH",
+        })
+        self.assertEqual(req_resp.status_code, 409)
+        self.assertIn("You already have an active ride", req_resp.data["detail"])
+
+        # 4. Another rider cannot book using this rider's quote
+        second_rider = User.objects.create_user(
+            username="third_rider", email="third@example.com", role="RIDER"
+        )
+        self.client.force_authenticate(second_rider)
+        hack_resp = self.client.post(reverse("rides:list"), {
+            "quote_id": str(quote.id),
+            "request_id": str(uuid.uuid4()),
+            "payment_method": "CASH",
+        })
+        self.assertEqual(hack_resp.status_code, 404)
+

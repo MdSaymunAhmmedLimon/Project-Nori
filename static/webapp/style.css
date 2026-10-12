@@ -12,3 +12,15 @@
 @media print{body{background:white;color:#000}.site-header,.skip-link,.receipt-actions{display:none!important}.receipt-page{width:100%;max-width:none;margin:0;padding:0}.receipt-document{border:0;box-shadow:none;padding:0}.receipt-document .pill{border:1px solid #555}.receipt-details>div,.receipt-total,.route-summary{break-inside:avoid}.receipt-document .muted,.receipt-document .form-hint,.receipt-details dt{color:#333}@page{margin:18mm}}
 
 .nav-toggle{display:none;border:0;background:transparent;font-size:22px;color:var(--ink);padding:6px;cursor:pointer}@media(max-width:700px){.nav-toggle{display:block}.site-header nav{display:none;position:absolute;top:74px;left:0;right:0;background:var(--paper);border-bottom:1px solid var(--line);padding:18px 20px;flex-direction:column;gap:14px;z-index:100}.site-header nav.open{display:flex}}
+
+.places-dropdown{position:absolute;top:100%;left:0;right:0;background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 12px 30px #173d3515;max-height:220px;overflow-y:auto;z-index:1050;margin-top:4px}
+.places-dropdown .place-item{padding:9px 12px;border-bottom:1px solid #f0f2ea;cursor:pointer;display:flex;flex-direction:column;gap:2px;text-align:left;background:none;border-left:0;border-right:0;border-top:0;width:100%;transition:background .12s}
+.places-dropdown .place-item:last-child{border-bottom:none}
+.places-dropdown .place-item:hover,.places-dropdown .place-item:focus{background:#f3f6eb}
+.places-dropdown .place-name{font-size:12px;font-weight:600;color:var(--ink)}
+.places-dropdown .place-address{font-size:11px;color:var(--muted)}
+.places-dropdown .place-tag{font-size:9px;color:#5f714c;background:#eaf1df;border-radius:8px;padding:1px 5px;align-self:flex-start;margin-top:2px}
+.quick-places{display:flex;gap:6px;flex-wrap:wrap;margin:5px 0 16px}
+.quick-place-pill{font-size:11px;padding:3px 9px;background:#eef2e6;border:1px solid #dce4d2;border-radius:16px;color:var(--ink);cursor:pointer;transition:all .15s}
+.quick-place-pill:hover{background:#d8e6c5}
+

@@ -33,15 +33,47 @@ class RideStopSerializer(serializers.ModelSerializer):
         fields = ("id", "stop_order", "label", "latitude", "longitude")
 
 
+class PlaceItemSerializer(serializers.Serializer):
+    label = serializers.CharField()
+    address = serializers.CharField()
+    latitude = serializers.DecimalField(max_digits=9, decimal_places=6)
+    longitude = serializers.DecimalField(max_digits=9, decimal_places=6)
+    category = serializers.CharField(required=False, default="")
+
+
 class QuoteInputSerializer(WritableFieldsOnlyMixin, serializers.Serializer):
     pickup_label = serializers.CharField(max_length=200)
     destination_label = serializers.CharField(max_length=200)
-    pickup_latitude = serializers.DecimalField(max_digits=9, decimal_places=6, min_value=-90, max_value=90)
-    pickup_longitude = serializers.DecimalField(max_digits=9, decimal_places=6, min_value=-180, max_value=180)
-    destination_latitude = serializers.DecimalField(max_digits=9, decimal_places=6, min_value=-90, max_value=90)
-    destination_longitude = serializers.DecimalField(max_digits=9, decimal_places=6, min_value=-180, max_value=180)
+    pickup_latitude = serializers.DecimalField(max_digits=9, decimal_places=6, min_value=-90, max_value=90, required=False)
+    pickup_longitude = serializers.DecimalField(max_digits=9, decimal_places=6, min_value=-180, max_value=180, required=False)
+    destination_latitude = serializers.DecimalField(max_digits=9, decimal_places=6, min_value=-90, max_value=90, required=False)
+    destination_longitude = serializers.DecimalField(max_digits=9, decimal_places=6, min_value=-180, max_value=180, required=False)
     vehicle_class = serializers.ChoiceField(choices=["STANDARD", "COMFORT", "XL", "MOTO"], default="STANDARD", required=False)
     stops = StopInputSerializer(many=True, required=False, default=list)
+
+    def validate(self, attrs):
+        from .places import resolve_location_name
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+
+        if attrs.get("pickup_latitude") is None or attrs.get("pickup_longitude") is None:
+            resolved = resolve_location_name(attrs.get("pickup_label"), user=user)
+            if not resolved:
+                raise serializers.ValidationError({
+                    "pickup_label": f"Could not find coordinates for '{attrs.get('pickup_label')}'. Please select a valid location from the search list."
+                })
+            attrs["pickup_latitude"], attrs["pickup_longitude"], _ = resolved
+
+        if attrs.get("destination_latitude") is None or attrs.get("destination_longitude") is None:
+            resolved = resolve_location_name(attrs.get("destination_label"), user=user)
+            if not resolved:
+                raise serializers.ValidationError({
+                    "destination_label": f"Could not find coordinates for '{attrs.get('destination_label')}'. Please select a valid location from the search list."
+                })
+            attrs["destination_latitude"], attrs["destination_longitude"], _ = resolved
+
+        return attrs
+
 
 
 class QuoteSerializer(serializers.ModelSerializer):

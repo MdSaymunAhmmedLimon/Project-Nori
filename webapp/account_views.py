@@ -1,13 +1,13 @@
-"""Browser password management using Django's one-use recovery tokens."""
+from django.contrib.auth import get_user_model, views as auth_views
+from django.shortcuts import redirect, render
+from django.urls import reverse, reverse_lazy
+from django.views import View
+from django.views.generic import TemplateView
 
-from urllib.parse import urlsplit
-
-from django.conf import settings
-from django.contrib.auth import views as auth_views
-from django.http import HttpResponseRedirect
-from django.urls import reverse_lazy
-
+from .forms import SecurityQuestionRequestForm, SecurityQuestionResetForm
 from .views import auth_limited
+
+User = get_user_model()
 
 
 class LimitedPasswordMixin:
@@ -38,53 +38,102 @@ class PasswordChangeDoneView(auth_views.PasswordChangeDoneView):
     }
 
 
-class PasswordResetView(LimitedPasswordMixin, auth_views.PasswordResetView):
+class PasswordResetView(View):
     template_name = "webapp/password_form.html"
-    email_template_name = "webapp/password_reset_email.txt"
-    subject_template_name = "webapp/password_reset_subject.txt"
-    success_url = reverse_lazy("webapp:password_reset_done")
-    extra_context = {
-        "heading": "Forgot your password?",
-        "description": "Enter your account email and we will send you a link to choose a new password.",
-        "submit_label": "Send reset link",
-    }
 
-    def form_valid(self, form):
-        # Use the configured public origin in deployment, never a supplied Host.
-        origin = urlsplit(settings.PUBLIC_BASE_URL)
-        form.save(
-            domain_override=self.request.get_host() if settings.DEBUG else origin.netloc,
-            use_https=self.request.is_secure() if settings.DEBUG else origin.scheme == "https",
-            token_generator=self.token_generator,
-            from_email=self.from_email,
-            email_template_name=self.email_template_name,
-            subject_template_name=self.subject_template_name,
-            request=self.request,
-        )
-        return HttpResponseRedirect(self.get_success_url())
+    def get(self, request):
+        form = SecurityQuestionRequestForm()
+        return render(request, self.template_name, {
+            "form": form,
+            "heading": "Forgot your password?",
+            "description": "Enter your username to reset your password using your security question (no email needed).",
+            "submit_label": "Find account",
+        })
+
+    def post(self, request):
+        if auth_limited(request):
+            form = SecurityQuestionRequestForm(request.POST)
+            return render(request, self.template_name, {
+                "form": form,
+                "heading": "Forgot your password?",
+                "description": "Enter your username to reset your password using your security question (no email needed).",
+                "submit_label": "Find account",
+                "rate_error": "Too many attempts. Please wait a minute.",
+            }, status=429)
+
+        form = SecurityQuestionRequestForm(request.POST)
+        if form.is_valid():
+            username = form.cleaned_data["username"]
+            request.session["reset_username"] = username
+            return redirect(f"{reverse('webapp:password_reset_verify')}?username={username}")
+
+        return render(request, self.template_name, {
+            "form": form,
+            "heading": "Forgot your password?",
+            "description": "Enter your username to reset your password using your security question (no email needed).",
+            "submit_label": "Find account",
+        })
 
 
-class PasswordResetDoneView(auth_views.PasswordResetDoneView):
+class PasswordResetVerifyView(View):
+    template_name = "webapp/password_form.html"
+
+    def get_user(self, request):
+        username = request.GET.get("username") or request.session.get("reset_username")
+        if not username:
+            return None
+        return User.objects.filter(username__iexact=username).first()
+
+    def get(self, request, *args, **kwargs):
+        user = self.get_user(request)
+        if not user or not user.security_question:
+            return redirect("webapp:password_reset")
+
+        form = SecurityQuestionResetForm(initial={
+            "username": user.username,
+            "security_question": user.security_question,
+        })
+        return render(request, self.template_name, {
+            "form": form,
+            "heading": "Security verification",
+            "description": "Answer your security question and choose a new password.",
+            "submit_label": "Reset password",
+        })
+
+    def post(self, request, *args, **kwargs):
+        if auth_limited(request):
+            form = SecurityQuestionResetForm(request.POST)
+            return render(request, self.template_name, {
+                "form": form,
+                "heading": "Security verification",
+                "description": "Answer your security question and choose a new password.",
+                "submit_label": "Reset password",
+                "rate_error": "Too many attempts. Please wait a minute.",
+            }, status=429)
+
+        form = SecurityQuestionResetForm(request.POST)
+        if form.is_valid():
+            form.save()
+            request.session.pop("reset_username", None)
+            return redirect("webapp:password_reset_complete")
+
+        # If security_question was not posted or blank, repopulate it from user
+        user = self.get_user(request)
+        if user and not form.data.get("security_question"):
+            form.initial["security_question"] = user.security_question
+
+        return render(request, self.template_name, {
+            "form": form,
+            "heading": "Security verification",
+            "description": "Answer your security question and choose a new password.",
+            "submit_label": "Reset password",
+        })
+
+
+class PasswordResetCompleteView(TemplateView):
     template_name = "webapp/account_message.html"
     extra_context = {
-        "heading": "Check your inbox",
-        "description": "If an active account uses that email, a reset link will be sent. Check your spam folder too. The link expires in one hour.",
+        "heading": "Password reset complete",
+        "description": "Your password has been updated. Sign in with your new password to continue your journey.",
     }
 
-
-class PasswordResetConfirmView(LimitedPasswordMixin, auth_views.PasswordResetConfirmView):
-    template_name = "webapp/password_form.html"
-    success_url = reverse_lazy("webapp:password_reset_complete")
-    extra_context = {
-        "heading": "Choose a new password",
-        "description": "Choose a password you have not used elsewhere. You will need to sign in again after saving it.",
-        "submit_label": "Save new password",
-    }
-
-
-class PasswordResetCompleteView(auth_views.PasswordResetCompleteView):
-    template_name = "webapp/account_message.html"
-    extra_context = {
-        "heading": "You are ready to return",
-        "description": "Your password has been reset. Sign in with your new password to continue your journey.",
-    }

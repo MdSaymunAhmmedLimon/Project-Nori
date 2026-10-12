@@ -59,16 +59,32 @@
     routeLine = L.polyline(line, {color:'#285c4e', weight:4, dashArray:'7 8'}).addTo(map);
     if (fit) map.fitBounds(line, {padding:[55,80], maxZoom:15});
   }
-  function choosePoint(kind, lat, lon) {
+  async function choosePoint(kind, lat, lon, customLabel = null) {
     const form = $('#quote-form'); if (!form || state.active || state.selected) return;
     form.elements[`${kind}_latitude`].value = Number(lat).toFixed(6);
     form.elements[`${kind}_longitude`].value = Number(lon).toFixed(6);
     const label = form.elements[`${kind}_label`];
-    if (!label.value || label.dataset.generated === 'true') { label.value = `${kind === 'pickup' ? 'Pickup' : 'Destination'} · ${Number(lat).toFixed(4)}, ${Number(lon).toFixed(4)}`; label.dataset.generated = 'true'; }
+    if (customLabel) {
+      label.value = customLabel;
+      label.dataset.generated = 'false';
+    } else if (!label.value || label.dataset.generated === 'true') {
+      try {
+        const places = await api(`rides/places/search/?q=`);
+        let nearestName = null, minDist = Infinity;
+        for (const p of (places || [])) {
+          const d = Math.hypot(Number(lat) - Number(p.latitude), Number(lon) - Number(p.longitude));
+          if (d < minDist) { minDist = d; nearestName = p.label; }
+        }
+        label.value = (minDist < 0.025 && nearestName) ? `Near ${nearestName}` : (kind === 'pickup' ? 'Selected Pickup' : 'Selected Destination');
+      } catch (_) {
+        label.value = kind === 'pickup' ? 'Selected Pickup' : 'Selected Destination';
+      }
+      label.dataset.generated = 'true';
+    }
     point(kind, lat, lon);
     invalidateQuote();
     state.pick = kind === 'pickup' ? 'destination' : 'pickup';
-    $('#map-instruction').textContent = kind === 'pickup' ? 'Now choose your destination on the map' : 'Your route is ready. See your fare to continue.';
+    $('#map-instruction').textContent = kind === 'pickup' ? 'Now choose your destination' : 'Your route is ready. See your fare to continue.';
     if (form.elements.pickup_latitude.value && form.elements.destination_latitude.value) drawRoute(Object.fromEntries(new FormData(form)));
   }
   function setupMap() {
@@ -125,9 +141,55 @@
     $('#profile-review-note').textContent = profile?.review_note || 'Changes to driver or vehicle details require a new review.';
     if (profile?.latitude != null) point('driver', profile.latitude, profile.longitude);
   }
+  async function loadSavedPlaces() {
+    if (config.user.role !== 'RIDER') return;
+    try {
+      const places = await api('rides/saved-places/', {optional:true});
+      const list = $('#saved-places-list');
+      if (!list) return;
+      list.innerHTML = places && places.length ? places.map(p => `
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--line);">
+          <div>
+            <strong>${esc(p.label)}</strong> <span class="muted" style="font-size:12px;">(${esc(p.address)})</span>
+          </div>
+          <div style="display:flex;gap:6px;">
+            <button type="button" class="button secondary small use-saved-place" data-lat="${p.latitude}" data-lon="${p.longitude}" data-label="${esc(p.label)}">Use</button>
+            <button type="button" class="plain-link delete-saved-place" data-id="${p.id}" style="color:var(--error,#d32f2f);font-size:12px;">Delete</button>
+          </div>
+        </div>
+      `).join('') : '<p class="muted" style="font-size:13px;">No saved places yet.</p>';
+
+      list.querySelectorAll('.use-saved-place').forEach(btn => {
+        btn.addEventListener('click', () => {
+          choosePoint(state.pick, btn.dataset.lat, btn.dataset.lon, btn.dataset.label);
+          changeTab('ride');
+        });
+      });
+      list.querySelectorAll('.delete-saved-place').forEach(btn => {
+        btn.addEventListener('click', () => busy(btn, async () => {
+          await api(`rides/saved-places/${btn.dataset.id}/`, {method:'DELETE'});
+          toast('Saved place deleted.');
+          await loadSavedPlaces();
+        }));
+      });
+    } catch (_) {}
+  }
   async function loadAccount() {
     const user = await api('auth/me/');
     populate($('#account-form'), user); $('#account-identity').textContent = `${user.username} · ${user.email}`;
+    if ($('#account-security-question') && user.security_question) {
+      $('#account-security-question').value = user.security_question;
+    }
+    try {
+      const ref = await api('auth/referral/', {optional:true});
+      if (ref && $('#referral-code-display')) {
+        $('#referral-code-display').textContent = ref.referral_code || 'None';
+        $('#referral-stats-display').textContent = `Earned credits: ${amount(ref.total_rewards_earned)} · ${ref.total_referrals} friends referred (${ref.completed_referrals} completed)`;
+      }
+    } catch (_) {}
+    if (config.user.role === 'RIDER') {
+      await loadSavedPlaces();
+    }
     if (config.user.role === 'DRIVER') {
       const [profile, vehicle] = await Promise.all([api('drivers/profile/', {optional:true}), api('drivers/vehicle/', {optional:true})]);
       setDriverProfile(profile); state.vehicle = vehicle;
@@ -163,6 +225,7 @@
     if (signature === tripSignature) return;
     tripSignature = signature;
     const completed = ride.status === 'COMPLETED', cancelled = ride.status === 'CANCELLED';
+    const isActive = ['REQUESTED','SEARCHING','ACCEPTED','DRIVER_ARRIVING','DRIVER_ARRIVED','IN_PROGRESS'].includes(ride.status);
     const partner = config.user.role === 'RIDER' ? ride.driver : ride.rider;
     let person = '';
     if (partner) {
@@ -177,7 +240,34 @@
     if (ride.payment) payment = `<div class="receipt"><p><strong>${amount(ride.payment.amount, ride.payment.currency)}</strong> · ${esc(ride.payment.method.toLowerCase())}</p><small>${ride.payment.status === 'PAID' ? 'Paid · ' + esc(date(ride.payment.paid_at)) : 'Payment pending'}</small>${ride.payment.status !== 'PAID' && config.user.role === 'DRIVER' && ride.payment.method === 'CASH' ? '<button class="button secondary full" data-payment="cash">Confirm cash received</button>' : ''}${ride.payment.status !== 'PAID' && config.user.role === 'RIDER' && ride.payment.method === 'CARD' ? '<button class="button full" data-payment="checkout">Pay securely by card ↗</button>' : ''}<a class="plain-link receipt-link" href="/app/rides/${esc(ride.id)}/receipt/">${ride.payment.status === 'PAID' ? 'View receipt' : 'View trip summary'} ↗</a></div>`;
     const rated = ride.ratings.some(rating => rating.author === config.user.id);
     const rating = completed && !rated ? '<form id="rating-form" class="rating-form"><h3>How was your journey?</h3><label>Rating<select name="score"><option value="5">★★★★★ · Excellent</option><option value="4">★★★★ · Good</option><option value="3">★★★ · Okay</option><option value="2">★★ · Could be better</option><option value="1">★ · Poor</option></select></label><label>Your feedback<textarea name="comment" maxlength="500" placeholder="Anything you would like to share? (optional)"></textarea></label><button class="button secondary full" type="submit">Send rating</button></form>' : (rated ? '<p class="form-hint">Thanks for sharing your rating.</p>' : '');
-    $('#trip-content').innerHTML = `<div class="trip-title"><h2>${esc(labels[ride.status])}</h2><span class="pill ${completed ? 'success' : cancelled ? 'error' : ''}">${esc(ride.status.toLowerCase().replaceAll('_',' '))}</span></div><div class="route-summary"><small>PICKUP</small>${esc(ride.quote.pickup_label)}<small>DESTINATION</small>${esc(ride.quote.destination_label)}</div><div class="fare-meta"><span>${amount(ride.quote.fare, ride.quote.currency)}</span><span>${esc(ride.quote.distance_km)} km est.</span></div>${person}${cancelled ? `<p class="muted">${esc(ride.cancellation_reason || 'This ride was cancelled.')}</p>` : ''}<ol class="timeline">${ride.events.map(event => `<li>${esc(labels[event.status])}<time>${esc(date(event.created_at))}</time></li>`).join('')}</ol>${actionButton}${canCancel ? '<form id="cancel-form" class="cancel-form"><label>Reason for cancelling (optional)<input name="reason" maxlength="300" placeholder="Let us know what changed"></label><button type="submit" class="button danger full">Cancel ride</button></form>' : ''}${payment}${rating}${completed || cancelled ? '<button class="plain-link" id="close-trip">Back to your next journey →</button>' : ''}`;
+
+    const sosButton = isActive ? `<div style="margin-top:10px;"><button type="button" id="sos-alert-btn" class="button danger small full" style="background:#c0392b;border-color:#c0392b;">🚨 Emergency SOS Alert</button></div>` : '';
+    const hasPartner = Boolean(ride.driver && ride.rider);
+    const chatSection = hasPartner && ['ACCEPTED','DRIVER_ARRIVING','DRIVER_ARRIVED','IN_PROGRESS'].includes(ride.status) ? `
+      <div class="chat-section" style="margin-top:16px;border-top:1px solid var(--line);padding-top:12px;">
+        <h3 style="font-size:14px;margin-bottom:8px;">💬 In-Trip Messages</h3>
+        <div id="trip-chat-log" style="max-height:140px;overflow-y:auto;background:var(--bg-subtle,#f8f9fa);padding:8px;border-radius:6px;font-size:13px;margin-bottom:8px;display:flex;flex-direction:column;gap:6px;">
+          <span class="muted" style="font-size:12px;">Loading messages…</span>
+        </div>
+        <form id="trip-chat-form" style="display:flex;gap:6px;">
+          <input name="content" id="trip-chat-input" placeholder="Message ${config.user.role === 'RIDER' ? 'driver' : 'rider'}…" maxlength="500" required style="flex:1;">
+          <button type="submit" class="button small">Send</button>
+        </form>
+      </div>
+    ` : '';
+
+    const tipSection = completed && config.user.role === 'RIDER' ? (ride.tip ? `<p class="form-hint" style="color:var(--success,#2e7d32);margin-top:8px;">★ Tip of ${amount(ride.tip, ride.quote.currency)} sent to driver.</p>` : `
+      <div class="tip-section" style="margin-top:12px;padding:10px;background:var(--bg-subtle,#f8f9fa);border-radius:6px;">
+        <span style="font-size:13px;font-weight:600;display:block;margin-bottom:6px;">Tip your driver (optional)</span>
+        <div style="display:flex;gap:6px;">
+          <button type="button" class="button secondary small tip-btn" data-tip="20">BDT 20</button>
+          <button type="button" class="button secondary small tip-btn" data-tip="50">BDT 50</button>
+          <button type="button" class="button secondary small tip-btn" data-tip="100">BDT 100</button>
+        </div>
+      </div>
+    `) : '';
+
+    $('#trip-content').innerHTML = `<div class="trip-title"><h2>${esc(labels[ride.status])}</h2><div style="display:flex;gap:6px;align-items:center;"><span class="pill ${completed ? 'success' : cancelled ? 'error' : ''}">${esc(ride.status.toLowerCase().replaceAll('_',' '))}</span><span class="pill success" style="font-size:11px;">👤 Private · 1 Rider</span></div></div><div class="route-summary"><small>PICKUP</small>${esc(ride.quote.pickup_label)}<small>DESTINATION</small>${esc(ride.quote.destination_label)}</div><div class="fare-meta"><span>${amount(ride.quote.fare, ride.quote.currency)}</span><span>${esc(ride.quote.distance_km)} km est.</span>${ride.quote.vehicle_class ? `<span class="pill" style="font-size:11px;">${esc(ride.quote.vehicle_class)}</span>` : ''}</div>${person}${cancelled ? `<p class="muted">${esc(ride.cancellation_reason || 'This ride was cancelled.')}</p>` : ''}<ol class="timeline">${ride.events.map(event => `<li>${esc(labels[event.status])}<time>${esc(date(event.created_at))}</time></li>`).join('')}</ol>${actionButton}${canCancel ? '<form id="cancel-form" class="cancel-form"><label>Reason for cancelling (optional)<input name="reason" maxlength="300" placeholder="Let us know what changed"></label><button type="submit" class="button danger full">Cancel ride</button></form>' : ''}${sosButton}${chatSection}${payment}${tipSection}${rating}${completed || cancelled ? '<button class="plain-link" id="close-trip">Back to your next journey →</button>' : ''}`;
     $('#trip-content').querySelectorAll('[data-ride-action]').forEach(button => button.addEventListener('click', () => busy(button, async () => {
       state.selected = await api(`rides/${ride.id}/actions/`, {method:'POST', data:{action:button.dataset.rideAction}}); await sync();
     })));
@@ -192,6 +282,43 @@
       if (result.url) { location.assign(result.url); return; }
       toast('Payment recorded.'); await sync();
     })));
+    $('#trip-content').querySelectorAll('.tip-btn').forEach(button => button.addEventListener('click', () => busy(button, async () => {
+      await api(`rides/${ride.id}/tip/`, {method:'POST', data:{amount:button.dataset.tip}});
+      toast(`Driver tip of BDT ${button.dataset.tip} added!`); await sync();
+    })));
+    $('#sos-alert-btn')?.addEventListener('click', event => busy(event.currentTarget, async () => {
+      const msg = prompt('Emergency SOS: Enter details of your situation (or click OK to dispatch SOS immediately):');
+      if (msg === null) return;
+      await api(`rides/${ride.id}/sos/`, {method:'POST', data:{message:msg || 'Emergency assistance requested.'}});
+      toast('🚨 Emergency SOS alert broadcasted! Support has been notified.', true);
+    }));
+    if ($('#trip-chat-log')) {
+      async function loadChat() {
+        try {
+          const msgs = await api(`rides/${ride.id}/messages/`);
+          const log = $('#trip-chat-log');
+          if (!log) return;
+          if (!msgs.length) {
+            log.innerHTML = '<span class="muted" style="font-size:12px;">No messages yet. Send a message to coordinate.</span>';
+          } else {
+            log.innerHTML = msgs.map(m => `
+              <div style="padding:4px 8px;border-radius:4px;background:${m.sender === config.user.id ? '#e8f5e9' : '#ffffff'};align-self:${m.sender === config.user.id ? 'flex-end' : 'flex-start'};max-width:85%;border:1px solid var(--line);">
+                <div style="font-size:10px;color:#777;font-weight:600;">${esc(m.sender_name)} · ${esc(date(m.created_at))}</div>
+                <div>${esc(m.content)}</div>
+              </div>
+            `).join('');
+            log.scrollTop = log.scrollHeight;
+          }
+        } catch (_) {}
+      }
+      loadChat();
+      onForm('#trip-chat-form', async (data, form) => {
+        if (!data.content?.trim()) return;
+        await api(`rides/${ride.id}/messages/`, {method:'POST', data:{content:data.content.trim()}});
+        form.reset();
+        await loadChat();
+      });
+    }
     $('#close-trip')?.addEventListener('click', () => { state.selected = state.active; history.replaceState({}, '', '/app/'); renderTrip(state.active); });
   }
   async function loadOffers() {
@@ -208,14 +335,35 @@
   async function loadHistory(page = state.page) {
     const request = ++historyRequest;
     const status = $('#history-filter').value;
-    const data = await api(`rides/?page=${page}${status ? '&status=' + encodeURIComponent(status) : ''}`);
+    const [data, scheduled] = await Promise.all([
+      api(`rides/?page=${page}${status ? '&status=' + encodeURIComponent(status) : ''}`),
+      config.user.role === 'RIDER' && !status && page === 1 ? api('rides/schedule/', {optional:true}) : Promise.resolve(null),
+    ]);
     if (request !== historyRequest) return;
     state.page = page;
-    $('#history-list').innerHTML = data.results.length ? data.results.map(ride => `<div class="trip-row"><span class="trip-icon">↗</span><div><h3>${esc(ride.quote.destination_label)}</h3><p>From ${esc(ride.quote.pickup_label)}</p><p>${esc(date(ride.created_at))}</p></div><div class="price">${amount(ride.quote.fare, ride.quote.currency)}<span class="pill">${esc(ride.status.toLowerCase().replaceAll('_',' '))}</span></div><button data-history="${esc(ride.id)}" aria-label="View trip to ${esc(ride.quote.destination_label)}">View →</button></div>`).join('') : '<div class="empty-state"><span class="empty-icon">◷</span>Your journeys will appear here.</div>';
+    let scheduledHtml = '';
+    const pendingScheduled = (scheduled?.results || scheduled || []).filter(s => !s.cancelled_at && !s.ride);
+    if (pendingScheduled.length) {
+      scheduledHtml = `<div class="scheduled-box" style="margin-bottom:16px;background:var(--bg-subtle,#f8f9fa);border:1px solid var(--line);border-radius:8px;padding:12px;"><strong style="display:block;margin-bottom:8px;">📅 Upcoming Scheduled Rides (Private)</strong>${pendingScheduled.map(s => `
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--line);">
+          <div>
+            <div style="font-weight:600;">${esc(s.quote.pickup_label)} → ${esc(s.quote.destination_label)}</div>
+            <small class="muted">Scheduled for ${esc(date(s.scheduled_for))} · ${amount(s.quote.fare, s.quote.currency)}</small>
+          </div>
+          <button class="button danger small cancel-scheduled-btn" data-id="${s.id}">Cancel</button>
+        </div>
+      `).join('')}</div>`;
+    }
+    $('#history-list').innerHTML = scheduledHtml + (data.results.length ? data.results.map(ride => `<div class="trip-row"><span class="trip-icon">↗</span><div><h3>${esc(ride.quote.destination_label)}</h3><p>From ${esc(ride.quote.pickup_label)}</p><p>${esc(date(ride.created_at))}</p></div><div class="price">${amount(ride.quote.fare, ride.quote.currency)}<span class="pill">${esc(ride.status.toLowerCase().replaceAll('_',' '))}</span></div><button data-history="${esc(ride.id)}" aria-label="View trip to ${esc(ride.quote.destination_label)}">View →</button></div>`).join('') : '<div class="empty-state"><span class="empty-icon">◷</span>Your journeys will appear here.</div>');
     $('#history-prev').disabled = !data.previous; $('#history-next').disabled = !data.next; $('#history-page').textContent = `Page ${state.page} · ${data.count} trips`;
     $('#history-prev').dataset.restDisabled = String(!data.previous); $('#history-next').dataset.restDisabled = String(!data.next);
     $('#history-list').querySelectorAll('[data-history]').forEach(button => button.addEventListener('click', () => busy(button, async () => {
       state.selected = await api(`rides/${button.dataset.history}/`); renderTrip(state.selected); await changeTab('ride'); $('#trip-panel').scrollIntoView({behavior:'smooth',block:'nearest'});
+    })));
+    $('#history-list').querySelectorAll('.cancel-scheduled-btn').forEach(button => button.addEventListener('click', () => busy(button, async () => {
+      await api(`rides/schedule/${button.dataset.id}/`, {method:'DELETE'});
+      toast('Scheduled ride cancelled.');
+      await loadHistory();
     })));
   }
   async function loadEarnings() {
@@ -282,24 +430,154 @@
   document.querySelectorAll('[data-pick]').forEach(button => button.addEventListener('click', () => { state.pick = button.dataset.pick; $('#map-instruction').textContent = `Click the map to set your ${state.pick}`; map?.invalidateSize(); }));
   function invalidateQuote() {
     state.quoteVersion++;
-    state.quote = null; state.requestId = null; $('#quote-result').hidden = true;
+    state.quote = null; state.requestId = null; state.appliedPromo = null; $('#quote-result').hidden = true;
   }
   $('#quote-form')?.addEventListener('input', event => { invalidateQuote(); if (event.target.name.endsWith('_label')) event.target.dataset.generated = 'false'; });
   $('#use-pickup-location')?.addEventListener('click', event => busy(event.currentTarget, async () => { const coords = await gps(); choosePoint('pickup', coords.latitude, coords.longitude); map?.setView([coords.latitude,coords.longitude],14); }));
+  
+  const bookingTypeSelect = $('#booking-type-select');
+  const scheduleRow = $('#schedule-picker-row');
+  const scheduleInput = $('#schedule-datetime');
+  if (bookingTypeSelect && scheduleRow) {
+    bookingTypeSelect.addEventListener('change', () => {
+      const isSchedule = bookingTypeSelect.value === 'SCHEDULE';
+      scheduleRow.hidden = !isSchedule;
+      if (isSchedule && scheduleInput && !scheduleInput.value) {
+        const minDate = new Date(Date.now() + 25 * 60000);
+        minDate.setMinutes(minDate.getMinutes() - minDate.getTimezoneOffset());
+        scheduleInput.min = minDate.toISOString().slice(0, 16);
+        scheduleInput.value = minDate.toISOString().slice(0, 16);
+      }
+    });
+  }
+
   onForm('#quote-form', async data => {
     invalidateQuote();
     const version = state.quoteVersion;
-    const quote = await api('rides/quotes/', {method:'POST', data});
+    const payload = {...data};
+    if (!payload.pickup_latitude) { delete payload.pickup_latitude; delete payload.pickup_longitude; }
+    if (!payload.destination_latitude) { delete payload.destination_latitude; delete payload.destination_longitude; }
+    const quote = await api('rides/quotes/', {method:'POST', data:payload});
     if (version !== state.quoteVersion || state.active) return;
-    state.quote = quote; state.requestId = crypto.randomUUID();
+    state.quote = quote; state.requestId = crypto.randomUUID(); state.appliedPromo = null;
     drawRoute(quote,true);
+    $('#pickup-latitude').value = quote.pickup_latitude;
+    $('#pickup-longitude').value = quote.pickup_longitude;
+    $('#destination-latitude').value = quote.destination_latitude;
+    $('#destination-longitude').value = quote.destination_longitude;
     $('#quote-result').hidden = false;
-    $('#quote-result').innerHTML = `<div class="fare-box"><div class="eyebrow">YOUR UPFRONT FARE</div><div class="fare-amount">${amount(quote.fare,quote.currency)}</div><div class="fare-meta"><span>≈ ${esc(quote.distance_km)} km</span><span>≈ ${quote.estimated_minutes} min</span></div><p class="form-hint">Distance and time are estimates. This fare is fixed for your trip. Quote valid for 10 minutes.</p><label>Payment method<select id="payment-method"><option value="CASH">Cash · pay your driver</option>${config.cardPayments ? '<option value="CARD">Card · pay after your trip</option>' : ''}</select></label><button id="request-ride" class="button full">Request a ride <span>→</span></button></div>`;
-    $('#request-ride').addEventListener('click', event => busy(event.currentTarget, async () => {
-      if (!state.quote) throw new Error('Get a new fare estimate first.');
-      state.selected = await api('rides/', {method:'POST',data:{quote_id:state.quote.id,request_id:state.requestId,payment_method:$('#payment-method').value}});
-      state.quote = null; $('#quote-result').hidden = true; toast('Finding a nearby driver for you.'); await sync();
+    const isSchedule = $('#booking-type-select')?.value === 'SCHEDULE';
+    $('#quote-result').innerHTML = `
+      <div class="fare-box">
+        <div class="eyebrow">YOUR UPFRONT FARE</div>
+        <div class="fare-amount" id="fare-amount-display">${amount(quote.fare,quote.currency)}</div>
+        <div class="fare-meta">
+          <span>≈ ${esc(quote.distance_km)} km</span>
+          <span>≈ ${quote.estimated_minutes} min</span>
+          <span class="pill success" style="font-size:11px;">👤 Private · 1 Rider</span>
+          ${quote.vehicle_class ? `<span class="pill" style="font-size:11px;">${esc(quote.vehicle_class)}</span>` : ''}
+        </div>
+        ${quote.surge_multiplier && Number(quote.surge_multiplier) > 1 ? `<div class="pill warning" style="margin:6px 0;display:inline-block;">⚡ Surge pricing active (×${quote.surge_multiplier})</div>` : ''}
+        <p class="form-hint">Distance and time are estimates. This trip is reserved exclusively for you. Fare quote valid for 10 minutes.</p>
+        <div class="promo-box" style="margin:12px 0;padding:10px;background:var(--bg-subtle,#f4f6f8);border-radius:6px;">
+          <label style="margin:0 0 4px 0;font-size:12px;font-weight:600;">Promo code</label>
+          <div style="display:flex;gap:6px;">
+            <input type="text" id="promo-code-input" placeholder="e.g. DISCOUNT10" maxlength="20" style="text-transform:uppercase;flex:1;">
+            <button type="button" id="apply-promo-btn" class="button secondary small">Apply</button>
+          </div>
+          <div id="promo-status" style="font-size:12px;margin-top:4px;" hidden></div>
+        </div>
+        <label>Payment method
+          <select id="payment-method">
+            <option value="CASH">Cash · pay your driver</option>
+            ${config.cardPayments ? '<option value="CARD">Card · pay after your trip</option>' : ''}
+          </select>
+        </label>
+        <button id="request-ride" class="button full">${isSchedule ? 'Confirm scheduled ride' : 'Request a ride'} <span>→</span></button>
+      </div>
+    `;
+
+    $('#apply-promo-btn')?.addEventListener('click', event => busy(event.currentTarget, async () => {
+      const code = $('#promo-code-input')?.value?.trim().toUpperCase();
+      const statusEl = $('#promo-status');
+      if (!code) {
+        if (statusEl) { statusEl.textContent = 'Please enter a promo code.'; statusEl.hidden = false; statusEl.style.color = 'var(--error)'; }
+        return;
+      }
+      try {
+        const res = await api('rides/promos/validate/', {
+          method: 'POST',
+          data: { code: code, fare: state.quote.fare }
+        });
+        state.appliedPromo = res.code;
+        if (statusEl) {
+          statusEl.textContent = `Promo ${res.code} applied! Saved ${amount(res.discount_applied, state.quote.currency)}.`;
+          statusEl.hidden = false;
+          statusEl.style.color = 'var(--success, #2e7d32)';
+        }
+        $('#fare-amount-display').innerHTML = `<s style="font-size:0.7em;opacity:0.6;margin-right:6px;">${amount(state.quote.fare, state.quote.currency)}</s>${amount(res.discounted_fare, state.quote.currency)}`;
+        toast(`Promo code ${res.code} applied!`);
+      } catch (err) {
+        state.appliedPromo = null;
+        if (statusEl) {
+          statusEl.textContent = err.message || 'Invalid promo code.';
+          statusEl.hidden = false;
+          statusEl.style.color = 'var(--error, #d32f2f)';
+        }
+        $('#fare-amount-display').textContent = amount(state.quote.fare, state.quote.currency);
+      }
     }));
+
+    $('#request-ride')?.addEventListener('click', event => busy(event.currentTarget, async () => {
+      if (!state.quote) throw new Error('Get a new fare estimate first.');
+      const currentIsSchedule = $('#booking-type-select')?.value === 'SCHEDULE';
+      const paymentMethod = $('#payment-method').value;
+      if (currentIsSchedule) {
+        const schedVal = $('#schedule-datetime')?.value;
+        if (!schedVal) throw new Error('Please select a scheduled pickup date and time.');
+        const schedDate = new Date(schedVal);
+        if (isNaN(schedDate.getTime())) throw new Error('Invalid scheduled pickup date/time.');
+        await api('rides/schedule/', {
+          method: 'POST',
+          data: {
+            quote_id: state.quote.id,
+            payment_method: paymentMethod,
+            scheduled_for: schedDate.toISOString()
+          }
+        });
+        state.quote = null;
+        $('#quote-result').hidden = true;
+        toast('Ride scheduled successfully! View it in My trips.');
+        await changeTab('history');
+      } else {
+        state.selected = await api('rides/', {
+          method: 'POST',
+          data: {
+            quote_id: state.quote.id,
+            request_id: state.requestId,
+            payment_method: paymentMethod,
+            promo_code: state.appliedPromo || undefined
+          }
+        });
+        state.quote = null;
+        $('#quote-result').hidden = true;
+        toast('Finding a nearby driver for you.');
+        await sync();
+      }
+    }));
+  });
+  onForm('#security-question-form', async (data, form) => {
+    if (!data.security_question) throw new Error('Please select a security question.');
+    if (!data.security_answer?.trim()) throw new Error('Please provide an answer to your security question.');
+    await api('auth/me/', {method:'PATCH', data:{security_question: data.security_question, security_answer: data.security_answer.trim()}});
+    form.elements.security_answer.value = '';
+    toast('Security question and answer saved.');
+  });
+  onForm('#save-place-form', async (data, form) => {
+    await api('rides/saved-places/', {method:'POST', data});
+    form.reset();
+    toast('Saved place added.');
+    await loadSavedPlaces();
   });
   onForm('#account-form', async data => { await api('auth/me/', {method:'PATCH', data}); toast('Your profile is updated.'); });
   onForm('#driver-profile-form', async data => { state.profile = await api('drivers/profile/', {method:state.profile ? 'PATCH' : 'POST', data}); setDriverProfile(state.profile); toast('Driver information saved for review.'); });
@@ -326,8 +604,68 @@
     if (event.persisted) { state.closing = false; connect(); sync().catch(error => toast(error.message,true)); }
   });
   document.addEventListener('visibilitychange', () => { if (!document.hidden) sync().catch(error => toast(error.message,true)); });
+  function setupPlaceSearch() {
+    ['pickup', 'destination'].forEach(kind => {
+      const input = $(`#${kind}-label`);
+      const dropdown = $(`#${kind}-places`);
+      if (!input || !dropdown) return;
+
+      let timer;
+      async function search(q = '') {
+        try {
+          const places = await api(`rides/places/search/?q=${encodeURIComponent(q)}`);
+          if (!places || !places.length) {
+            dropdown.innerHTML = '<div class="place-item" style="cursor:default;"><span class="place-name">No locations found</span><span class="place-address">Try another landmark or area name</span></div>';
+            dropdown.hidden = false;
+            return;
+          }
+          dropdown.innerHTML = places.map(p => `
+            <button type="button" class="place-item" data-label="${esc(p.label)}" data-address="${esc(p.address)}" data-lat="${p.latitude}" data-lon="${p.longitude}">
+              <span class="place-name">${esc(p.label)}</span>
+              <span class="place-address">${esc(p.address)}</span>
+              ${p.category ? `<span class="place-tag">${esc(p.category)}</span>` : ''}
+            </button>
+          `).join('');
+          dropdown.hidden = false;
+
+          dropdown.querySelectorAll('.place-item').forEach(btn => {
+            btn.addEventListener('click', e => {
+              e.preventDefault();
+              e.stopPropagation();
+              choosePoint(kind, btn.dataset.lat, btn.dataset.lon, btn.dataset.label);
+              dropdown.hidden = true;
+              if (kind === 'pickup' && !$('#destination-label')?.value) {
+                $('#destination-label')?.focus();
+              }
+            });
+          });
+        } catch (_) {
+          dropdown.hidden = true;
+        }
+      }
+
+      input.addEventListener('focus', () => search(input.value.trim()));
+      input.addEventListener('input', () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => search(input.value.trim()), 200);
+      });
+    });
+
+    document.addEventListener('click', event => {
+      if (!event.target.closest('.location-input')) {
+        document.querySelectorAll('.places-dropdown').forEach(d => { d.hidden = true; });
+      }
+    });
+
+    document.querySelectorAll('.quick-place-pill').forEach(pill => {
+      pill.addEventListener('click', () => {
+        choosePoint('destination', pill.dataset.lat, pill.dataset.lon, pill.dataset.dest);
+      });
+    });
+  }
+
   async function start() {
-    setupMap(); connect();
+    setupMap(); setupPlaceSearch(); connect();
     setInterval(() => { if (!document.hidden) sync().catch(() => { $('#connection-status').textContent = 'Connection interrupted. Retrying…'; }); }, 8000);
     setInterval(() => { if (state.socket?.readyState === WebSocket.OPEN) state.socket.send(JSON.stringify({type:'ping'})); }, 30000);
     await sync();
