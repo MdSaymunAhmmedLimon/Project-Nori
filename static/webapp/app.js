@@ -23,12 +23,25 @@
     return Object.entries(data || {}).map(([key, value]) => `${key === 'detail' || key === 'non_field_errors' ? '' : key.replaceAll('_', ' ') + ': '}${explain(value)}`).join(' ');
   }
   async function api(path, {method = 'GET', data, optional = false} = {}) {
+    const isFormData = typeof FormData !== 'undefined' && data instanceof FormData;
     const csrf = document.cookie.split('; ').find(row => row.startsWith('csrftoken='))?.split('=').slice(1).join('=');
-    const response = await fetch(`/api/${path}`, {method, credentials:'same-origin', headers:{'Content-Type':'application/json', 'X-CSRFToken':decodeURIComponent(csrf || '')}, body:data === undefined ? undefined : JSON.stringify(data)});
+    const headers = {'X-CSRFToken': decodeURIComponent(csrf || '')};
+    if (!isFormData && data !== undefined) headers['Content-Type'] = 'application/json';
+    const body = isFormData ? data : (data === undefined ? undefined : JSON.stringify(data));
+    let response;
+    try {
+      response = await fetch(`/api/${path}`, {method, credentials:'same-origin', headers, body});
+    } catch (err) {
+      if (optional) return null;
+      throw err;
+    }
     const result = await response.json().catch(() => null);
-    if (optional && response.status === 404) return null;
+    if (optional && (response.status === 404 || response.status === 405)) return null;
     if (response.status === 401) { state.closing = true; state.socket?.close(); location.assign('/login/?next=/app/'); throw new Error('Please log in again.'); }
-    if (!response.ok) throw new Error(explain(result) || `The request failed (${response.status}).`);
+    if (!response.ok) {
+      if (optional) return null;
+      throw new Error(explain(result) || `The request failed (${response.status}).`);
+    }
     return result;
   }
   async function busy(button, task) {
@@ -121,11 +134,17 @@
   async function changeTab(tab) {
     state.tab = tab;
     document.querySelectorAll('.tab-panel').forEach(node => { node.hidden = node.id !== `tab-${tab}`; });
-    document.querySelectorAll('[data-tab]').forEach(node => node.classList.toggle('active', node.dataset.tab === tab));
+    document.querySelectorAll('[data-tab]').forEach(node => {
+      const selected = node.dataset.tab === tab;
+      node.classList.toggle('active', selected);
+      node.setAttribute('aria-pressed', String(selected));
+    });
     if (tab === 'ride') setTimeout(() => map?.invalidateSize(), 30);
     if (tab === 'history') await loadHistory();
     if (tab === 'earnings') await loadEarnings();
     if (tab === 'notifications') await loadNotifications();
+    if (tab === 'stats') await loadStats();
+    if (tab === 'payouts') await loadPayouts();
   }
   function setDriverProfile(profile) {
     state.profile = profile; state.online = Boolean(profile?.is_online);
@@ -174,6 +193,24 @@
       });
     } catch (_) {}
   }
+  async function loadEmergencyContacts() {
+    const list = $('#emergency-contacts-list, #driver-emergency-contacts-list');
+    if (!list) return;
+    const contacts = await api('auth/emergency-contacts/');
+    list.innerHTML = contacts.length ? contacts.map(contact => `
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--line);">
+        <div><strong>${esc(contact.name)}</strong><div class="muted" style="font-size:12px;">${esc(contact.relationship || 'Trusted contact')} · ${esc(contact.phone_number)}</div></div>
+        <button type="button" class="plain-link delete-emergency-contact" data-id="${contact.id}" aria-label="Remove ${esc(contact.name)}" style="color:var(--error,#d32f2f);font-size:12px;">Remove</button>
+      </div>
+    `).join('') : '<p class="muted" style="font-size:13px;">No emergency contacts saved.</p>';
+    list.querySelectorAll('.delete-emergency-contact').forEach(button => {
+      button.addEventListener('click', () => busy(button, async () => {
+        await api(`auth/emergency-contacts/${button.dataset.id}/`, {method:'DELETE'});
+        toast('Emergency contact removed.');
+        await loadEmergencyContacts();
+      }));
+    });
+  }
   async function loadAccount() {
     const user = await api('auth/me/');
     populate($('#account-form'), user); $('#account-identity').textContent = `${user.username} · ${user.email}`;
@@ -188,7 +225,7 @@
       }
     } catch (_) {}
     if (config.user.role === 'RIDER') {
-      await loadSavedPlaces();
+      await Promise.all([loadSavedPlaces(), loadEmergencyContacts()]);
     }
     if (config.user.role === 'DRIVER') {
       const [profile, vehicle] = await Promise.all([api('drivers/profile/', {optional:true}), api('drivers/vehicle/', {optional:true})]);
@@ -196,6 +233,7 @@
       populate($('#driver-profile-form'), profile); populate($('#vehicle-form'), vehicle); populate($('#driver-location-form'), profile);
       $('#vehicle-form').elements.year.max = new Date().getFullYear() + 1;
       $('#driver-profile-form').elements.license_expiry_date.min = new Date().toISOString().slice(0,10);
+      await loadEmergencyContacts();
     }
   }
   function renderTrip(ride) {
@@ -241,7 +279,7 @@
     const rated = ride.ratings.some(rating => rating.author === config.user.id);
     const rating = completed && !rated ? '<form id="rating-form" class="rating-form"><h3>How was your journey?</h3><label>Rating<select name="score"><option value="5">★★★★★ · Excellent</option><option value="4">★★★★ · Good</option><option value="3">★★★ · Okay</option><option value="2">★★ · Could be better</option><option value="1">★ · Poor</option></select></label><label>Your feedback<textarea name="comment" maxlength="500" placeholder="Anything you would like to share? (optional)"></textarea></label><button class="button secondary full" type="submit">Send rating</button></form>' : (rated ? '<p class="form-hint">Thanks for sharing your rating.</p>' : '');
 
-    const sosButton = isActive ? `<div style="margin-top:10px;"><button type="button" id="sos-alert-btn" class="button danger small full" style="background:#c0392b;border-color:#c0392b;">🚨 Emergency SOS Alert</button></div>` : '';
+    const sosButton = isActive ? `<div style="margin-top:10px;"><button type="button" id="sos-alert-btn" class="button danger small full" style="background:#c0392b;border-color:#c0392b;">🚨 Emergency SOS Alert</button><button type="button" id="share-trip-btn" class="button secondary small full" style="margin-top:8px;">Share live trip</button><div id="share-trip-link" class="form-hint" hidden></div></div>` : '';
     const hasPartner = Boolean(ride.driver && ride.rider);
     const chatSection = hasPartner && ['ACCEPTED','DRIVER_ARRIVING','DRIVER_ARRIVED','IN_PROGRESS'].includes(ride.status) ? `
       <div class="chat-section" style="margin-top:16px;border-top:1px solid var(--line);padding-top:12px;">
@@ -291,6 +329,36 @@
       if (msg === null) return;
       await api(`rides/${ride.id}/sos/`, {method:'POST', data:{message:msg || 'Emergency assistance requested.'}});
       toast('🚨 Emergency SOS alert broadcasted! Support has been notified.', true);
+    }));
+    $('#share-trip-btn')?.addEventListener('click', event => busy(event.currentTarget, async () => {
+      const shareButton = event.currentTarget;
+      const share = await api(`rides/${ride.id}/share/`, {method:'POST', data:{}});
+      shareButton.hidden = true;
+      const sharePanel = $('#share-trip-link');
+      sharePanel.replaceChildren();
+      sharePanel.hidden = false;
+      const link = document.createElement('a');
+      link.href = share.share_url;
+      link.textContent = 'Open live trip link';
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      const stop = document.createElement('button');
+      stop.type = 'button';
+      stop.className = 'plain-link';
+      stop.textContent = 'Stop sharing';
+      stop.addEventListener('click', () => busy(stop, async () => {
+        await api(`rides/share-links/${share.id}/`, {method:'DELETE'});
+        sharePanel.hidden = true;
+        shareButton.hidden = false;
+        toast('Trip sharing stopped.');
+      }));
+      sharePanel.append(link, document.createTextNode(' · '), stop, document.createTextNode(' · Expires in six hours.'));
+      try {
+        await navigator.clipboard.writeText(share.share_url);
+        toast('Live trip link copied. It expires in six hours.');
+      } catch (_) {
+        window.prompt('Copy this live trip link. It expires in six hours:', share.share_url);
+      }
     }));
     if ($('#trip-chat-log')) {
       async function loadChat() {
@@ -579,6 +647,12 @@
     toast('Saved place added.');
     await loadSavedPlaces();
   });
+  ['#emergency-contact-form', '#driver-emergency-contact-form'].forEach(selector => onForm(selector, async (data, form) => {
+    await api('auth/emergency-contacts/', {method:'POST', data});
+    form.reset();
+    toast('Emergency contact added.');
+    await loadEmergencyContacts();
+  }));
   onForm('#account-form', async data => { await api('auth/me/', {method:'PATCH', data}); toast('Your profile is updated.'); });
   onForm('#driver-profile-form', async data => { state.profile = await api('drivers/profile/', {method:state.profile ? 'PATCH' : 'POST', data}); setDriverProfile(state.profile); toast('Driver information saved for review.'); });
   onForm('#vehicle-form', async data => { state.vehicle = await api('drivers/vehicle/', {method:state.vehicle ? 'PATCH' : 'POST', data}); toast('Vehicle saved. Your profile will be reviewed.'); setDriverProfile(await api('drivers/profile/')); });

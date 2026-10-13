@@ -2,6 +2,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.forms import PasswordChangeForm
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.validators import RegexValidator
 from django.db import IntegrityError
 from rest_framework import serializers
 from rest_framework.exceptions import AuthenticationFailed
@@ -179,5 +180,29 @@ class ResetPasswordWithAnswerSerializer(WritableFieldsOnlyMixin, serializers.Ser
         user.set_password(self.validated_data["new_password1"])
         user.save()
         return user
+
+
+class EmergencyContactSerializer(serializers.ModelSerializer):
+    class Meta:
+        from .models import EmergencyContact
+        model = EmergencyContact
+        fields = ("id", "name", "phone_number", "relationship", "created_at")
+        read_only_fields = ("id", "created_at")
+
+
+class EmergencyContactInputSerializer(WritableFieldsOnlyMixin, serializers.Serializer):
+    name = serializers.CharField(max_length=100)
+    phone_number = serializers.CharField(
+        max_length=16,
+        validators=[RegexValidator(r"^\+[1-9]\d{7,14}$", "Use an international phone number, e.g. +8801712345678.")],
+    )
+    relationship = serializers.CharField(max_length=50, required=False, allow_blank=True, default="")
+
+    def validate_phone_number(self, value):
+        from .models import EmergencyContact
+        request = self.context.get("request")
+        if request and EmergencyContact.objects.filter(user=request.user, phone_number=value).exists():
+            raise serializers.ValidationError("This phone number is already saved.")
+        return value
 
 

@@ -6,13 +6,13 @@
     <h1>Your city.<br>Your next <em>move.</em></h1>
     <p class="hero-description">Whether it's your morning commute, a late-night ride, or a spontaneous adventure — Nori connects you with a trusted driver in minutes.</p>
     <div class="hero-actions"><a class="button large" href="{% url 'webapp:register' %}">Find your ride <span aria-hidden="true">↗</span></a><a class="plain-link" href="{% url 'webapp:register' %}?role=driver">Drive with Nori <span aria-hidden="true">→</span></a></div>
-    <div class="hero-notes"><span>◎ Upfront fares</span><span>↝ Live trip updates</span><span>♡ Your journey, your choice</span></div>
+    <div class="hero-notes"><span>{% include 'webapp/icon.html' with name='wallet' %} Upfront fares</span><span>{% include 'webapp/icon.html' with name='pin' %} Live trip updates</span><span>{% include 'webapp/icon.html' with name='shield' %} Private journeys</span></div>
   </div>
   <div class="city-art" aria-label="Illustration of a ride through the city" role="img">
     <div class="city-grid"></div><div class="park park-one"></div><div class="park park-two"></div><div class="river"></div>
     <svg class="route-art" viewBox="0 0 520 480" aria-hidden="true"><path d="M110 360 V250 Q110 220 140 220 H335 Q365 220 365 190 V110" fill="none" stroke="#fff" stroke-width="19" stroke-linecap="round"/><path d="M110 360 V250 Q110 220 140 220 H335 Q365 220 365 190 V110" fill="none" stroke="#16493f" stroke-width="7" stroke-dasharray="2 0" stroke-linecap="round"/><circle cx="110" cy="360" r="12" fill="#cce99b" stroke="#16493f" stroke-width="5"/><circle cx="365" cy="110" r="12" fill="#16493f" stroke="white" stroke-width="5"/></svg>
     <div class="map-label map-label-one">A little closer<br><strong>to where you want to be.</strong></div>
-    <div class="illustration-car" aria-hidden="true">↗</div><div class="destination-tag">Your next chapter <span>●</span></div>
+    <div class="illustration-car" aria-hidden="true">{% include 'webapp/icon.html' with name='ride' %}</div><div class="destination-tag">Your next chapter <span>●</span></div>
     <div class="floating-trip"><span class="trip-icon">↗</span><div><strong>Let's get you there.</strong><small>A good journey starts here.</small></div><span class="floating-arrow">→</span></div>
   </div>
 </section>

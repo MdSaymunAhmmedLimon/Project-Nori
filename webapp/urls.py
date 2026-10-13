@@ -18,6 +18,7 @@ urlpatterns = [
     path("password/reset/<uidb64>/<token>/", account_views.PasswordResetVerifyView.as_view(), name="password_reset_confirm"),
     path("password/reset/complete/", account_views.PasswordResetCompleteView.as_view(), name="password_reset_complete"),
     path("app/", views.dashboard, name="dashboard"),
+    path("share/<str:token>/", views.shared_trip, name="shared-trip"),
     path("app/rides/<uuid:ride_id>/receipt/", views.receipt, name="receipt"),
     path("operations/", views.operations, name="operations"),
     path("health/", health, name="health"),

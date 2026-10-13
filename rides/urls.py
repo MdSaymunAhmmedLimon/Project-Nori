@@ -21,6 +21,8 @@ urlpatterns = [
     path("carpools/<uuid:pk>/leave/", views.LeaveCarpool.as_view(), name="leave-carpool"),
     path("saved-places/", views.SavedPlacesView.as_view(), name="saved-places"),
     path("saved-places/<int:pk>/", views.SavedPlaceDetailView.as_view(), name="saved-place-detail"),
+    path("shared/<str:token>/", views.PublicTripShare.as_view(), name="public-share"),
+    path("share-links/<int:pk>/", views.TripShareDetail.as_view(), name="share-link-detail"),
     path("<uuid:pk>/", views.RideDetail.as_view(), name="detail"),
     path("<uuid:pk>/actions/", views.RideAction.as_view(), name="action"),
     path("<uuid:pk>/rating/", views.RateRide.as_view(), name="rating"),
@@ -30,4 +32,5 @@ urlpatterns = [
     path("<uuid:pk>/tip/", views.RideTipView.as_view(), name="tip"),
     path("<uuid:pk>/messages/", views.RideMessagesView.as_view(), name="messages"),
     path("<uuid:pk>/eta/", views.LiveETAView.as_view(), name="eta"),
+    path("<uuid:pk>/share/", views.TripShare.as_view(), name="share"),
 ]

@@ -1,3 +1,6 @@
+from datetime import timedelta
+
+from django.conf import settings
 from django.db.models import Avg, Count, F, Q, Sum
 from django.utils import timezone
 from rest_framework import generics
@@ -9,7 +12,7 @@ from rest_framework.views import APIView
 from . import services
 from .models import (
     ACTIVE_STATUSES, CarpoolPassenger, CarpoolRide, Ride, RideOffer,
-    SavedPlace, ScheduledRide, SOSAlert,
+    SavedPlace, ScheduledRide, SOSAlert, TripShareToken,
 )
 from .serializers import (
     ActionSerializer, CarpoolCreateSerializer, CarpoolJoinSerializer,
@@ -296,5 +299,63 @@ class LiveETAView(APIView):
     def get(self, request, pk):
         eta_data = services.get_ride_eta(request.user, pk)
         return Response(eta_data)
+
+
+class TripShare(APIView):
+    def post(self, request, pk):
+        share = services.create_trip_share(request.user, pk)
+        from .serializers import TripShareSerializer
+        return Response(TripShareSerializer(share, context={"request": request}).data, status=201)
+
+
+class TripShareDetail(APIView):
+    def delete(self, request, pk):
+        services.revoke_trip_share(request.user, pk)
+        return Response({"detail": "Trip sharing stopped."})
+
+
+class PublicTripShare(APIView):
+    authentication_classes = []
+    permission_classes = []
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "rides"
+
+    def get(self, request, token):
+        share = TripShareToken.objects.select_related(
+            "ride__quote", "ride__driver", "ride__rider",
+        ).filter(token=token, expires_at__gt=timezone.now()).first()
+        if not share:
+            raise NotFound("This trip link has expired or was revoked.")
+        ride = share.ride
+        data = {
+            "status": ride.status,
+            "pickup": ride.quote.pickup_label,
+            "destination": ride.quote.destination_label,
+            "updated_at": ride.updated_at,
+            "expires_at": share.expires_at,
+            "driver": None,
+            "location": None,
+        }
+        if ride.driver_id:
+            driver = ride.driver
+            profile = getattr(driver, "driver_profile", None)
+            data["driver"] = {
+                "name": driver.get_full_name() or driver.username,
+                "vehicle": None,
+            }
+            if profile and hasattr(profile, "vehicle"):
+                vehicle = profile.vehicle
+                data["driver"]["vehicle"] = {
+                    "make": vehicle.make, "model": vehicle.model,
+                    "color": vehicle.color, "license_plate": vehicle.license_plate,
+                }
+            if (ride.status in ACTIVE_STATUSES and profile and profile.latitude is not None
+                    and profile.location_updated_at
+                    and profile.location_updated_at >= timezone.now() - timedelta(seconds=settings.LOCATION_MAX_AGE_SECONDS)):
+                data["location"] = {
+                    "latitude": str(profile.latitude), "longitude": str(profile.longitude),
+                    "updated_at": profile.location_updated_at,
+                }
+        return Response(data)
 
 

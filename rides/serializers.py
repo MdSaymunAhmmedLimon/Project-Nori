@@ -10,9 +10,10 @@ from drivers.models import DriverProfile
 from payments.models import Payment
 
 from .models import (
-    ASSIGNED_STATUSES, CarpoolPassenger, CarpoolRide, Rating, Ride,
+    ASSIGNED_STATUSES, Badge, CarpoolPassenger, CarpoolRide,
+    FavouriteDriver, LostItem, LoyaltyPoints, PriceLock, Rating, Ride,
     RideEvent, RideMessage, RideOffer, RideQuote, RideStop, RideTip,
-    SavedPlace, ScheduledRide, SOSAlert,
+    SavedPlace, ScheduledRide, SOSAlert, TripShareToken, UserBadge,
 )
 
 
@@ -100,13 +101,16 @@ class ActionSerializer(WritableFieldsOnlyMixin, serializers.Serializer):
 class RatingSerializer(serializers.ModelSerializer):
     class Meta:
         model = Rating
-        fields = ("id", "author", "recipient", "score", "comment", "created_at")
+        fields = ("id", "author", "recipient", "score", "comment", "feedback_tags", "created_at")
         read_only_fields = ("id", "author", "recipient", "created_at")
 
 
 class RatingInputSerializer(WritableFieldsOnlyMixin, serializers.Serializer):
     score = serializers.IntegerField(min_value=1, max_value=5)
     comment = serializers.CharField(max_length=500, required=False, allow_blank=True, default="")
+    feedback_tags = serializers.ListField(
+        child=serializers.CharField(max_length=50), required=False, default=list
+    )
 
 
 class EventSerializer(serializers.ModelSerializer):
@@ -123,14 +127,23 @@ class RideSerializer(serializers.ModelSerializer):
     ratings = RatingSerializer(many=True, read_only=True)
     payment = serializers.SerializerMethodField()
     tip = serializers.SerializerMethodField()
+    verification_pin = serializers.SerializerMethodField()
 
     class Meta:
         model = Ride
         fields = (
             "id", "request_id", "status", "quote", "rider", "driver", "payment_method", "payment",
-            "cancellation_fee", "cancellation_reason", "tip", "created_at", "updated_at",
+            "cancellation_fee", "cancellation_reason", "verification_pin", "ride_preferences",
+            "carbon_emissions_kg", "tip", "created_at", "updated_at",
             "accepted_at", "arrived_at", "started_at", "completed_at", "cancelled_at", "events", "ratings",
         )
+
+    def get_verification_pin(self, ride):
+        request = self.context.get("request")
+        user = getattr(request, "user", None) if request else self.context.get("user")
+        if user and user.is_authenticated and user.pk in {ride.rider_id, ride.driver_id}:
+            return ride.verification_pin
+        return None
 
     def get_tip(self, ride):
         if hasattr(ride, "tip"):
@@ -286,5 +299,117 @@ class SavedPlaceInputSerializer(WritableFieldsOnlyMixin, serializers.Serializer)
     address = serializers.CharField(max_length=200)
     latitude = serializers.DecimalField(max_digits=9, decimal_places=6, min_value=-90, max_value=90)
     longitude = serializers.DecimalField(max_digits=9, decimal_places=6, min_value=-180, max_value=180)
+
+
+class FavouriteDriverSerializer(serializers.ModelSerializer):
+    driver_id = serializers.IntegerField(source="driver.id", read_only=True)
+    driver_name = serializers.SerializerMethodField()
+    driver_rating = serializers.SerializerMethodField()
+    driver_phone = serializers.CharField(source="driver.phone_number", read_only=True)
+
+    class Meta:
+        model = FavouriteDriver
+        fields = ("id", "driver", "driver_id", "driver_name", "driver_rating", "driver_phone", "created_at")
+        read_only_fields = ("id", "created_at")
+
+    def get_driver_name(self, obj):
+        return obj.driver.get_full_name() or obj.driver.username
+
+    def get_driver_rating(self, obj):
+        return obj.driver.received_ratings.aggregate(value=Avg("score"))["value"]
+
+
+class LostItemSerializer(serializers.ModelSerializer):
+    reporter_name = serializers.CharField(source="reporter.username", read_only=True)
+
+    class Meta:
+        model = LostItem
+        fields = (
+            "id", "ride", "reporter", "reporter_name", "description",
+            "status", "admin_note", "created_at", "resolved_at",
+        )
+        read_only_fields = ("id", "ride", "reporter", "reporter_name", "created_at")
+
+
+class LostItemInputSerializer(WritableFieldsOnlyMixin, serializers.Serializer):
+    description = serializers.CharField(max_length=500)
+
+
+class TripShareSerializer(serializers.ModelSerializer):
+    share_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = TripShareToken
+        fields = ("id", "ride", "token", "share_url", "created_at", "expires_at")
+        read_only_fields = ("id", "ride", "token", "share_url", "created_at", "expires_at")
+
+    def get_share_url(self, obj):
+        request = self.context.get("request")
+        path = f"/share/{obj.token}/"
+        if request:
+            return request.build_absolute_uri(path)
+        return path
+
+
+class BadgeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Badge
+        fields = ("id", "code", "name", "description", "icon", "criteria_type", "criteria_value")
+
+
+class UserBadgeSerializer(serializers.ModelSerializer):
+    badge = BadgeSerializer(read_only=True)
+
+    class Meta:
+        model = UserBadge
+        fields = ("id", "badge", "earned_at")
+
+
+class PriceLockSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PriceLock
+        fields = (
+            "id", "pickup_label", "destination_label",
+            "pickup_latitude", "pickup_longitude",
+            "destination_latitude", "destination_longitude",
+            "locked_fare", "currency", "valid_until", "is_active", "created_at",
+        )
+        read_only_fields = ("id", "locked_fare", "currency", "valid_until", "is_active", "created_at")
+
+
+class PriceLockInputSerializer(WritableFieldsOnlyMixin, serializers.Serializer):
+    pickup_label = serializers.CharField(max_length=200)
+    destination_label = serializers.CharField(max_length=200)
+    pickup_latitude = serializers.DecimalField(max_digits=9, decimal_places=6, min_value=-90, max_value=90, required=False)
+    pickup_longitude = serializers.DecimalField(max_digits=9, decimal_places=6, min_value=-180, max_value=180, required=False)
+    destination_latitude = serializers.DecimalField(max_digits=9, decimal_places=6, min_value=-90, max_value=90, required=False)
+    destination_longitude = serializers.DecimalField(max_digits=9, decimal_places=6, min_value=-180, max_value=180, required=False)
+
+    def validate(self, attrs):
+        from .places import resolve_location_name
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if attrs.get("pickup_latitude") is None or attrs.get("pickup_longitude") is None:
+            resolved = resolve_location_name(attrs.get("pickup_label"), user=user)
+            if not resolved:
+                raise serializers.ValidationError({
+                    "pickup_label": f"Could not find coordinates for '{attrs.get('pickup_label')}'."
+                })
+            attrs["pickup_latitude"], attrs["pickup_longitude"], _ = resolved
+
+        if attrs.get("destination_latitude") is None or attrs.get("destination_longitude") is None:
+            resolved = resolve_location_name(attrs.get("destination_label"), user=user)
+            if not resolved:
+                raise serializers.ValidationError({
+                    "destination_label": f"Could not find coordinates for '{attrs.get('destination_label')}'."
+                })
+            attrs["destination_latitude"], attrs["destination_longitude"], _ = resolved
+        return attrs
+
+
+class LoyaltyPointsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = LoyaltyPoints
+        fields = ("points", "tier", "lifetime_points", "updated_at")
 
 

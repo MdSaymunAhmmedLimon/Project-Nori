@@ -54,6 +54,9 @@ class Ride(models.Model):
     payment_method = models.CharField(max_length=4, choices=PaymentMethod.choices, default=PaymentMethod.CASH)
     cancellation_fee = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
     cancellation_reason = models.CharField(max_length=300, blank=True)
+    verification_pin = models.CharField(max_length=4, blank=True)
+    ride_preferences = models.JSONField(default=dict, blank=True)
+    carbon_emissions_kg = models.DecimalField(max_digits=6, decimal_places=3, default=Decimal("0"))
 
     cancelled_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="cancelled_rides")
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
@@ -115,6 +118,7 @@ class Rating(models.Model):
     recipient = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="received_ratings")
     score = models.PositiveSmallIntegerField(validators=[MinValueValidator(1), MaxValueValidator(5)])
     comment = models.CharField(max_length=500, blank=True)
+    feedback_tags = models.JSONField(default=list, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -336,5 +340,109 @@ class RideStop(models.Model):
 
     def __str__(self):
         return f"Stop {self.stop_order}: {self.label}"
+
+
+class FavouriteDriver(models.Model):
+    rider = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="favourite_drivers")
+    driver = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="favourited_by")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["rider", "driver"], name="unique_favourite_driver")]
+
+    def __str__(self):
+        return f"{self.rider.username} favorited {self.driver.username}"
+
+
+class TripShareToken(models.Model):
+    ride = models.ForeignKey("Ride", on_delete=models.CASCADE, related_name="share_tokens")
+    token = models.CharField(max_length=64, unique=True, db_index=True)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+
+    def __str__(self):
+        return f"ShareToken {self.token[:8]} for Ride {self.ride_id}"
+
+
+class LostItem(models.Model):
+    class Status(models.TextChoices):
+        REPORTED = "REPORTED", "Reported"
+        CONTACTING = "CONTACTING", "Contacting driver"
+        FOUND = "FOUND", "Found"
+        RETURNED = "RETURNED", "Returned"
+        NOT_FOUND = "NOT_FOUND", "Not found"
+
+    ride = models.ForeignKey("Ride", on_delete=models.CASCADE, related_name="lost_items")
+    reporter = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    description = models.CharField(max_length=500)
+    status = models.CharField(max_length=15, choices=Status.choices, default=Status.REPORTED)
+    admin_note = models.CharField(max_length=500, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"LostItem on Ride {self.ride_id}: {self.description[:30]}"
+
+
+class Badge(models.Model):
+    code = models.CharField(max_length=30, unique=True)
+    name = models.CharField(max_length=100)
+    description = models.CharField(max_length=200)
+    icon = models.CharField(max_length=10)  # emoji
+    criteria_type = models.CharField(max_length=30)  # ride_count, early_bird, night_owl, big_tipper, five_star_streak, loyal_rider
+    criteria_value = models.PositiveIntegerField(default=1)
+
+    def __str__(self):
+        return f"{self.icon} {self.name}"
+
+
+class UserBadge(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="earned_badges")
+    badge = models.ForeignKey(Badge, on_delete=models.CASCADE)
+    earned_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["user", "badge"], name="unique_user_badge")]
+        ordering = ["-earned_at"]
+
+    def __str__(self):
+        return f"{self.user.username} earned {self.badge.name}"
+
+
+class PriceLock(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="price_locks")
+    pickup_label = models.CharField(max_length=200)
+    destination_label = models.CharField(max_length=200)
+    pickup_latitude = models.DecimalField(max_digits=9, decimal_places=6)
+    pickup_longitude = models.DecimalField(max_digits=9, decimal_places=6)
+    destination_latitude = models.DecimalField(max_digits=9, decimal_places=6)
+    destination_longitude = models.DecimalField(max_digits=9, decimal_places=6)
+    locked_fare = models.DecimalField(max_digits=10, decimal_places=2)
+    currency = models.CharField(max_length=3)
+    valid_until = models.DateTimeField()
+    is_active = models.BooleanField(default=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.user.username}: {self.pickup_label} -> {self.destination_label} ({self.locked_fare} {self.currency})"
+
+
+class LoyaltyPoints(models.Model):
+    TIER_CHOICES = [("SILVER", "Silver"), ("GOLD", "Gold"), ("PLATINUM", "Platinum")]
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="loyalty")
+    points = models.PositiveIntegerField(default=0)
+    tier = models.CharField(max_length=10, choices=TIER_CHOICES, default="SILVER")
+    lifetime_points = models.PositiveIntegerField(default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.user.username}: {self.points} pts ({self.tier})"
 
 

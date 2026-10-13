@@ -7,6 +7,7 @@ from django.core.cache import cache
 from django.core.management import call_command
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from django.test import override_settings
 from rest_framework.test import APITestCase
 
@@ -213,6 +214,34 @@ class RidesNewFeaturesTests(APITestCase):
         resolve_resp = self.client.post(resolve_url)
         self.assertEqual(resolve_resp.status_code, 200)
         self.assertIsNotNone(resolve_resp.data["resolved_at"])
+
+    def test_trip_share_link_is_live_private_and_revocable(self):
+        quote = self.create_quote()
+        ride = Ride.objects.create(
+            rider=self.rider, driver=self.driver, quote=quote,
+            request_id=uuid.uuid4(), status=Ride.Status.IN_PROGRESS,
+            verification_pin="4931",
+        )
+        self.client.force_authenticate(self.rider)
+        created = self.client.post(reverse("rides:share", kwargs={"pk": ride.pk}), {})
+        self.assertEqual(created.status_code, 201)
+        self.assertIn("/share/", created.data["share_url"])
+        self.assertLessEqual(parse_datetime(created.data["expires_at"]) - timezone.now(), timedelta(hours=6))
+
+        public = self.client.get(reverse("rides:public-share", kwargs={"token": created.data["token"]}))
+        self.assertEqual(public.status_code, 200)
+        self.assertEqual(public.data["status"], "IN_PROGRESS")
+        self.assertEqual(public.data["driver"]["vehicle"]["license_plate"], self.vehicle.license_plate)
+        self.assertNotIn("verification_pin", public.data)
+        self.assertNotIn("phone_number", public.data["driver"])
+
+        stranger = User.objects.create_user(username="share_stranger", email="share-stranger@example.com")
+        self.client.force_authenticate(stranger)
+        revoked = self.client.delete(reverse("rides:share-link-detail", kwargs={"pk": created.data["id"]}))
+        self.assertEqual(revoked.status_code, 404)
+        self.client.force_authenticate(self.rider)
+        self.assertEqual(self.client.delete(reverse("rides:share-link-detail", kwargs={"pk": created.data["id"]})).status_code, 200)
+        self.assertEqual(self.client.get(reverse("rides:public-share", kwargs={"token": created.data["token"]})).status_code, 404)
 
     # 6. Carpooling / Ride Sharing
     @override_settings(ALLOW_MULTIPLE_RIDERS_PER_TRIP=True)

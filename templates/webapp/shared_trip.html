@@ -1,0 +1,22 @@
+{% extends 'webapp/base.html' %}
+{% load static %}
+{% block title %}Shared trip · Nori{% endblock %}
+{% block og_title %}A live trip is being shared with you · Nori{% endblock %}
+{% block og_description %}View ride status and the driver's recent location.{% endblock %}
+{% block robots %}noindex, nofollow{% endblock %}
+{% block content %}
+<section class="auth-shell" style="max-width:620px;margin:48px auto;padding:0 18px;">
+  <article class="panel" id="shared-trip" data-share-token="{{ share_token }}">
+    <div class="eyebrow">NORi TRIP UPDATE</div>
+    <h1 id="share-status">Loading trip details…</h1>
+    <p id="share-message" class="muted" role="status" aria-live="polite">Checking this private sharing link.</p>
+    <div id="share-details" hidden>
+      <div class="route-summary"><small>PICKUP</small><span id="share-pickup"></span><small>DESTINATION</small><span id="share-destination"></span></div>
+      <div id="share-driver" class="trip-person" hidden></div>
+      <p id="share-location" class="muted" hidden></p>
+      <p class="form-hint">This page refreshes automatically. The link owner can stop sharing at any time.</p>
+    </div>
+  </article>
+</section>
+{% endblock %}
+{% block scripts %}<script src="{% static 'webapp/shared_trip.js' %}" defer></script>{% endblock %}

@@ -121,3 +121,18 @@ class Referral(models.Model):
     def __str__(self):
         return f"{self.referrer.username} -> {self.referee.username} ({self.get_status_display()})"
 
+
+class EmergencyContact(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="emergency_contacts")
+    name = models.CharField(max_length=100)
+    phone_number = models.CharField(max_length=16)
+    relationship = models.CharField(max_length=50, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["name"]
+        constraints = [models.UniqueConstraint(fields=["user", "phone_number"], name="unique_emergency_contact")]
+
+    def __str__(self):
+        return f"{self.name} ({self.relationship}) - {self.user.username}"
+

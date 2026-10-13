@@ -14,6 +14,7 @@
   <title>{% block title %}Nori · A better way to go{% endblock %}</title>
   <link rel="icon" href="{% static 'webapp/mark.svg' %}" type="image/svg+xml">
   <link rel="stylesheet" href="{% static 'webapp/style.css' %}">
+  <link rel="stylesheet" href="{% static 'webapp/professional.css' %}">
   {% block head %}{% endblock %}
 </head>
 <body class="{% block body_class %}{% endblock %}">
@@ -31,7 +32,7 @@
         <a href="{% url 'webapp:register' %}" class="button small">Get started <span aria-hidden="true">↗</span></a>
       {% endif %}
     </nav>
-    <button class="nav-toggle" id="nav-toggle" aria-label="Toggle navigation" aria-expanded="false" aria-controls="site-nav">☰</button>
+    <button class="nav-toggle" id="nav-toggle" aria-label="Toggle navigation" aria-expanded="false" aria-controls="site-nav">{% include 'webapp/icon.html' with name='menu' %}</button>
   </header>
   <main id="main">{% block content %}{% endblock %}</main>
   <script>document.getElementById('nav-toggle')?.addEventListener('click',function(){var nav=document.getElementById('site-nav');var open=nav.classList.toggle('open');this.setAttribute('aria-expanded',open);});</script>

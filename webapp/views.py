@@ -92,14 +92,118 @@ def receipt(request, ride_id):
     })
 
 
+@never_cache
+@require_http_methods(["GET", "HEAD"])
+def shared_trip(request, token):
+    return render(request, "webapp/shared_trip.html", {"share_token": token})
+
+
 @user_passes_test(lambda user: user.is_active and user.is_staff)
 def operations(request):
+    from rides.models import SOSAlert, SurgePricingRule, Ride, ACTIVE_STATUSES
+    from drivers.models import DriverProfile, DriverDocument
+    from payments.models import Payment
+    from accounts.models import User
+    from django.db.models import Avg, Count, Q, Sum, F
+    from django.db.models.functions import TruncDate
+    from django.utils import timezone
+    import datetime
+
+    # Existing metrics
+    users_count = User.objects.count()
+    active_count = Ride.objects.filter(status__in=ACTIVE_STATUSES).count()
+    completed_count = Ride.objects.filter(status="COMPLETED").count()
+    pending_count = DriverProfile.objects.filter(verification_status="PENDING").count()
+    recent_rides = Ride.objects.select_related("rider", "driver", "quote")[:20]
+    revenue = Payment.objects.filter(status="PAID").values("currency").annotate(gross=Sum("amount"), fees=Sum("platform_fee"))
+
+    # NEW: SOS Alerts
+    sos_alerts = SOSAlert.objects.select_related("ride__rider", "ride__driver", "raised_by").order_by("-created_at")[:20]
+    unresolved_sos = SOSAlert.objects.filter(resolved_at__isnull=True).count()
+
+    # NEW: Driver verification queue
+    pending_drivers = DriverProfile.objects.filter(
+        verification_status="PENDING"
+    ).select_related("user").prefetch_related("documents", "vehicle").order_by("created_at")[:20]
+
+    # NEW: Revenue analytics (last 30 days daily breakdown)
+    thirty_days_ago = timezone.now() - datetime.timedelta(days=30)
+    daily_revenue = list(
+        Payment.objects.filter(status="PAID", created_at__gte=thirty_days_ago)
+        .annotate(date=TruncDate("created_at"))
+        .values("date")
+        .annotate(
+            total=Sum("amount"),
+            fees=Sum("platform_fee"),
+            cash=Sum("amount", filter=Q(method="CASH")),
+            card=Sum("amount", filter=Q(method="CARD")),
+            count=Count("id"),
+        )
+        .order_by("date")
+    )
+    # Find max for chart scaling
+    max_daily = max((d["total"] or 0 for d in daily_revenue), default=0) if daily_revenue else 0
+    max_daily_val = float(max_daily) if max_daily else 0
+    for day in daily_revenue:
+        tot = float(day["total"] or 0)
+        day["percent"] = round((tot / max_daily_val * 100), 1) if max_daily_val > 0 else 0
+
+    # 30-day totals
+    revenue_30d_total = sum((d["total"] or 0 for d in daily_revenue), 0)
+    revenue_30d_fees = sum((d["fees"] or 0 for d in daily_revenue), 0)
+    revenue_30d_cash = sum((d["cash"] or 0 for d in daily_revenue), 0)
+    revenue_30d_card = sum((d["card"] or 0 for d in daily_revenue), 0)
+
+    # NEW: Cancellation analytics
+    total_rides = Ride.objects.count()
+    cancelled_rides = Ride.objects.filter(status="CANCELLED")
+    cancelled_count = cancelled_rides.count()
+    cancellation_rate = round((cancelled_count / total_rides * 100), 1) if total_rides else 0
+    rider_cancelled = cancelled_rides.filter(cancelled_by__role="RIDER").count()
+    driver_cancelled = cancelled_rides.filter(cancelled_by__role="DRIVER").count()
+    recent_cancellations = cancelled_rides.select_related("rider", "driver", "quote").order_by("-cancelled_at")[:10]
+    # Top cancellation reasons
+    cancel_reasons = list(
+        cancelled_rides.exclude(cancellation_reason="")
+        .values("cancellation_reason")
+        .annotate(count=Count("id"))
+        .order_by("-count")[:5]
+    )
+
+    # NEW: Surge rules
+    surge_rules = SurgePricingRule.objects.all()[:20]
+
+    # NEW: Platform totals
+    total_drivers = User.objects.filter(role="DRIVER").count()
+    online_drivers = DriverProfile.objects.filter(is_online=True).count()
+    approved_drivers = DriverProfile.objects.filter(verification_status="APPROVED").count()
+
     context = {
-        "users_count": User.objects.count(),
-        "active_count": Ride.objects.filter(status__in=ACTIVE_STATUSES).count(),
-        "completed_count": Ride.objects.filter(status="COMPLETED").count(),
-        "pending_count": DriverProfile.objects.filter(verification_status="PENDING").count(),
-        "recent_rides": Ride.objects.select_related("rider", "driver", "quote")[:20],
-        "revenue": Payment.objects.filter(status="PAID").values("currency").annotate(gross=Sum("amount"), fees=Sum("platform_fee")),
+        "users_count": users_count,
+        "active_count": active_count,
+        "completed_count": completed_count,
+        "pending_count": pending_count,
+        "recent_rides": recent_rides,
+        "revenue": revenue,
+        "sos_alerts": sos_alerts,
+        "unresolved_sos": unresolved_sos,
+        "pending_drivers": pending_drivers,
+        "daily_revenue": daily_revenue,
+        "max_daily": float(max_daily) if max_daily else 1,
+        "revenue_30d_total": revenue_30d_total,
+        "revenue_30d_fees": revenue_30d_fees,
+        "revenue_30d_cash": revenue_30d_cash,
+        "revenue_30d_card": revenue_30d_card,
+        "cancelled_count": cancelled_count,
+        "cancellation_rate": cancellation_rate,
+        "rider_cancelled": rider_cancelled,
+        "driver_cancelled": driver_cancelled,
+        "recent_cancellations": recent_cancellations,
+        "cancel_reasons": cancel_reasons,
+        "surge_rules": surge_rules,
+        "total_drivers": total_drivers,
+        "online_drivers": online_drivers,
+        "approved_drivers": approved_drivers,
     }
     return render(request, "webapp/operations.html", context)
+

@@ -1,4 +1,6 @@
 import math
+import random
+import secrets
 import uuid
 from datetime import timedelta
 from decimal import Decimal
@@ -15,16 +17,48 @@ from notifications.services import notify, publish
 
 from .geo import distance_km, money
 from .models import (
-    ACTIVE_STATUSES, ASSIGNED_STATUSES, CarpoolPassenger, CarpoolRide,
-    PromoCode, PromoUsage, Rating, Ride, RideEvent, RideMessage, RideOffer,
-    RideQuote, RideStop, RideTip, SavedPlace, ScheduledRide, SOSAlert,
-    SurgePricingRule,
+    ACTIVE_STATUSES, ASSIGNED_STATUSES, Badge, CarpoolPassenger, CarpoolRide,
+    FavouriteDriver, LostItem, LoyaltyPoints, PriceLock, PromoCode, PromoUsage,
+    Rating, Ride, RideEvent, RideMessage, RideOffer, RideQuote, RideStop, RideTip,
+    SavedPlace, ScheduledRide, SOSAlert, SurgePricingRule, TripShareToken,
+    UserBadge,
 )
 
 
 class Conflict(APIException):
     status_code = 409
     default_detail = "This action is no longer available. Refresh and try again."
+
+
+def generate_verification_pin():
+    """Return a random 4-digit PIN for ride verification."""
+    return f"{random.randint(1000, 9999)}"
+
+
+@transaction.atomic
+def create_trip_share(user, ride_id):
+    """Create a short-lived, revocable read-only link for an active trip."""
+    ride = Ride.objects.select_for_update().filter(pk=ride_id).first()
+    if not ride or user.pk not in {ride.rider_id, ride.driver_id}:
+        raise NotFound()
+    if ride.status not in ACTIVE_STATUSES:
+        raise Conflict("Trip sharing is available while a ride is active.")
+    return TripShareToken.objects.create(
+        ride=ride, created_by=user, token=secrets.token_urlsafe(32),
+        expires_at=timezone.now() + timedelta(hours=6),
+    )
+
+
+def revoke_trip_share(user, share_id):
+    share = TripShareToken.objects.filter(pk=share_id, created_by=user).first()
+    if not share:
+        raise NotFound()
+    share.delete()
+
+
+def calculate_carbon_emissions(distance_km):
+    """Return estimated kg CO2 emissions for a car trip (~0.12 kg/km)."""
+    return (Decimal(str(distance_km)) * Decimal("0.120")).quantize(Decimal("0.001"))
 
 
 def require_role(user, role):
@@ -94,7 +128,7 @@ def expire_searches(user=None):
 
 
 @transaction.atomic
-def request_ride(user, *, quote_id, request_id, payment_method, promo_code=""):
+def request_ride(user, *, quote_id, request_id, payment_method, promo_code="", ride_preferences=None):
     require_role(user, "RIDER")
     get_user_model().objects.select_for_update().get(pk=user.pk)
     existing = Ride.objects.filter(rider=user, request_id=request_id).first()
@@ -114,7 +148,20 @@ def request_ride(user, *, quote_id, request_id, payment_method, promo_code=""):
         raise ValidationError({"quote_id": "This quote has expired. Get a new estimate."})
     if Ride.objects.filter(quote=quote).exists():
         raise Conflict("This quote has already been used. Get a new estimate.")
-    ride = Ride.objects.create(rider=user, quote=quote, request_id=request_id, payment_method=payment_method)
+
+    pin = generate_verification_pin()
+    carbon = calculate_carbon_emissions(quote.distance_km)
+    prefs = ride_preferences if isinstance(ride_preferences, dict) else {}
+
+    ride = Ride.objects.create(
+        rider=user,
+        quote=quote,
+        request_id=request_id,
+        payment_method=payment_method,
+        verification_pin=pin,
+        carbon_emissions_kg=carbon,
+        ride_preferences=prefs,
+    )
     # Apply promo code if provided
     if promo_code:
         promo, discounted_fare, discount_amount = validate_promo(user, promo_code, quote.fare)
@@ -298,7 +345,7 @@ def transition_ride(user, ride_id, action, reason=""):
 
 
 @transaction.atomic
-def rate_ride(user, ride_id, *, score, comment=""):
+def rate_ride(user, ride_id, *, score, comment="", feedback_tags=None):
     ride = Ride.objects.select_for_update().filter(pk=ride_id).first()
     if not ride or user.pk not in {ride.rider_id, ride.driver_id}:
         raise NotFound()
@@ -307,7 +354,10 @@ def rate_ride(user, ride_id, *, score, comment=""):
     if Rating.objects.filter(ride=ride, author=user).exists():
         raise Conflict("You have already rated this ride.")
     recipient_id = ride.driver_id if user.pk == ride.rider_id else ride.rider_id
-    return Rating.objects.create(ride=ride, author=user, recipient_id=recipient_id, score=score, comment=comment)
+    return Rating.objects.create(
+        ride=ride, author=user, recipient_id=recipient_id,
+        score=score, comment=comment, feedback_tags=feedback_tags or [],
+    )
 
 
 def validate_promo(user, code, fare):
