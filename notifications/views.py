@@ -39,3 +39,9 @@ class MarkRead(APIView):
         if updated:
             publish(request.user.pk, "notifications_read")
         return Response({"detail": "Notifications marked as read."})
+
+
+class NotificationSummary(APIView):
+    def get(self, request):
+        unread = Notification.objects.filter(user=request.user, read_at__isnull=True).count()
+        return Response({"unread_count": unread})

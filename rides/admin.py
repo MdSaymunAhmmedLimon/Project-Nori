@@ -1,8 +1,12 @@
-from django.contrib import admin
+from django.contrib import admin, messages
+from django.http import HttpResponseRedirect
 from django.utils import timezone
+from rest_framework.exceptions import APIException
+
+from .support import update_lost_item
 
 from .models import (
-    CarpoolPassenger, CarpoolRide, PromoCode, PromoUsage, Rating, Ride,
+    CarpoolPassenger, CarpoolRide, LostItem, PromoCode, PromoUsage, Rating, Ride,
     RideEvent, RideMessage, RideOffer, RideQuote, RideStop, RideTip,
     SavedPlace, ScheduledRide, SOSAlert, SurgePricingRule, TrackPoint,
 )
@@ -98,4 +102,37 @@ admin.site.register(RideTip, ReadOnlyAdmin)
 admin.site.register(RideMessage, ReadOnlyAdmin)
 admin.site.register(SavedPlace, ReadOnlyAdmin)
 admin.site.register(RideStop, ReadOnlyAdmin)
+
+
+@admin.register(LostItem)
+class LostItemAdmin(admin.ModelAdmin):
+    list_display = ("id", "ride", "reporter", "status", "created_at", "resolved_at")
+    list_filter = ("status", "created_at")
+    search_fields = ("ride__id", "reporter__username", "description")
+    list_select_related = ("ride", "reporter")
+    readonly_fields = ("ride", "reporter", "description", "created_at", "resolved_at")
+    fields = ("ride", "reporter", "description", "status", "admin_note", "created_at", "resolved_at")
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def formfield_for_dbfield(self, db_field, request, **kwargs):
+        if db_field.name == "admin_note":
+            kwargs["help_text"] = "Internal staff notes. Never shown to riders or drivers."
+        return super().formfield_for_dbfield(db_field, request, **kwargs)
+
+    def save_model(self, request, obj, form, change):
+        saved = update_lost_item(request.user, obj.pk, status=obj.status, admin_note=obj.admin_note)
+        obj.resolved_at = saved.resolved_at
+
+    def changeform_view(self, request, object_id=None, form_url="", extra_context=None):
+        try:
+            return super().changeform_view(request, object_id, form_url, extra_context)
+        except APIException as error:
+            # Concurrent support changes are shown as a recoverable admin error.
+            self.message_user(request, str(error.detail), level=messages.ERROR)
+            return HttpResponseRedirect(request.path)
 

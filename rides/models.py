@@ -69,6 +69,11 @@ class Ride(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["rider", "-created_at", "-id"], name="ride_rider_history_idx"),
+            models.Index(fields=["driver", "-created_at", "-id"], name="ride_driver_history_idx"),
+            models.Index(fields=["driver", "completed_at"], condition=models.Q(status="COMPLETED"), name="ride_driver_completed_idx"),
+        ]
         constraints = [
             models.UniqueConstraint(fields=["rider", "request_id"], name="ride_request_idempotent"),
             models.UniqueConstraint(fields=["rider"], condition=models.Q(status__in=ACTIVE_STATUSES), name="one_active_ride_per_rider"),
@@ -110,6 +115,7 @@ class TrackPoint(models.Model):
 
     class Meta:
         ordering = ["recorded_at"]
+        indexes = [models.Index(fields=["ride", "-recorded_at"], name="track_ride_recorded_idx")]
 
 
 class Rating(models.Model):
@@ -208,6 +214,10 @@ class ScheduledRide(models.Model):
 
     class Meta:
         ordering = ["scheduled_for"]
+        indexes = [
+            models.Index(fields=["scheduled_for", "id"], condition=models.Q(cancelled_at__isnull=True, ride__isnull=True), name="schedule_due_pending_idx"),
+            models.Index(fields=["rider", "scheduled_for", "id"], condition=models.Q(cancelled_at__isnull=True, ride__isnull=True), name="schedule_rider_pending_idx"),
+        ]
 
 
 class SurgePricingRule(models.Model):

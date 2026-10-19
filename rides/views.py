@@ -1,25 +1,31 @@
+import csv
 from datetime import timedelta
 
 from django.conf import settings
 from django.db.models import Avg, Count, F, Q, Sum
+from django.http import HttpResponse
 from django.utils import timezone
+from django.utils.cache import add_never_cache_headers
 from rest_framework import generics
 from rest_framework.exceptions import NotFound
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
-from . import services
+from . import services, support
 from .models import (
-    ACTIVE_STATUSES, CarpoolPassenger, CarpoolRide, Ride, RideOffer,
+    ACTIVE_STATUSES, CarpoolPassenger, CarpoolRide, FavouriteDriver, LostItem, Ride, RideOffer,
     SavedPlace, ScheduledRide, SOSAlert, TripShareToken,
 )
+from .reporting import filter_history
+from .queries import with_ride_details
 from .serializers import (
     ActionSerializer, CarpoolCreateSerializer, CarpoolJoinSerializer,
     CarpoolPassengerSerializer, CarpoolRideSerializer, OfferSerializer,
+    FavouriteDriverSerializer, LostItemInputSerializer, LostItemSerializer,
     PlaceItemSerializer, PromoValidateSerializer, QuoteInputSerializer,
     QuoteSerializer, RatingInputSerializer, RatingSerializer,
-    RequestRideSerializer, RideMessageInputSerializer, RideMessageSerializer,
+    RequestRideSerializer, RescheduleRideInputSerializer, RideMessageInputSerializer, RideMessageSerializer,
     RideSerializer, RideTipInputSerializer, RideTipSerializer,
     SavedPlaceInputSerializer, SavedPlaceSerializer,
     ScheduleRideInputSerializer, ScheduledRideSerializer, SOSAlertSerializer,
@@ -28,7 +34,7 @@ from .serializers import (
 
 
 def own_rides(user):
-    return Ride.objects.filter(Q(rider=user) | Q(driver=user)).select_related("quote", "rider", "driver", "payment").prefetch_related("events", "ratings")
+    return Ride.objects.filter(Q(rider=user) | Q(driver=user))
 
 
 class PlaceSearchView(APIView):
@@ -59,10 +65,7 @@ class RideList(generics.ListAPIView):
     throttle_scope = "rides"
 
     def get_queryset(self):
-        queryset = own_rides(self.request.user)
-        if self.request.query_params.get("status"):
-            queryset = queryset.filter(status=self.request.query_params["status"])
-        return queryset
+        return with_ride_details(filter_history(own_rides(self.request.user), self.request.query_params))
 
     def post(self, request):
         serializer = RequestRideSerializer(data=request.data)
@@ -71,10 +74,58 @@ class RideList(generics.ListAPIView):
         return Response(RideSerializer(ride).data, status=201 if created else 200)
 
 
+class RideExport(APIView):
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "rides"
+
+    def get(self, request):
+        # Avoid event/rating prefetches: a report only needs the route and payment.
+        rides = filter_history(
+            Ride.objects.filter(Q(rider=request.user) | Q(driver=request.user))
+            .select_related("quote", "payment"), request.query_params,
+        )
+        rows = list(rides[:5001])
+        if len(rows) > 5000:
+            return Response({"detail": "Reports support up to 5,000 trips. Narrow the date range and try again."}, status=400)
+        response = HttpResponse(content_type="text/csv; charset=utf-8")
+        response["Content-Disposition"] = 'attachment; filename="nori-trips.csv"'
+        add_never_cache_headers(response)
+        response.write("\ufeff")  # Preserve place names in spreadsheet applications.
+        writer = csv.writer(response)
+        writer.writerow([
+            "Trip ID", "Requested at (ISO 8601)", "Completed at (ISO 8601)",
+            "Pickup", "Destination", "Status", "Payment method", "Currency",
+            "Quoted fare", "Final fare", "Payment status", "Cancellation fee",
+        ])
+        for ride in rows:
+            payment = getattr(ride, "payment", None)
+            writer.writerow([
+                str(ride.pk), ride.created_at.isoformat(),
+                ride.completed_at.isoformat() if ride.completed_at else "",
+                csv_text(ride.quote.pickup_label), csv_text(ride.quote.destination_label),
+                ride.get_status_display(), ride.payment_method,
+                payment.currency if payment else ride.quote.currency,
+                ride.quote.fare, payment.amount if payment else "",
+                payment.status if payment else "", ride.cancellation_fee,
+            ])
+        if len(response.content) > 4_000_000:
+            return Response({"detail": "This report is too large. Narrow the date range and try again."}, status=400)
+        return response
+
+
+def csv_text(value):
+    # Quoting alone does not prevent spreadsheet formula execution.
+    if value.lstrip().startswith(("=", "+", "-", "@")) or value.startswith(("\t", "\r", "\n")):
+        return "'" + value
+    return value
+
+
 class CurrentRide(APIView):
     def get(self, request):
+        if request.user.role == "RIDER":
+            services.dispatch_due_scheduled_rides(user=request.user, limit=1)
         services.expire_searches(request.user)
-        ride = own_rides(request.user).filter(status__in=ACTIVE_STATUSES).first()
+        ride = with_ride_details(own_rides(request.user)).filter(status__in=ACTIVE_STATUSES).first()
         if ride and ride.status == "SEARCHING":
             services.dispatch_ride(ride.pk)
         return Response(RideSerializer(ride).data if ride else None)
@@ -84,7 +135,7 @@ class RideDetail(generics.RetrieveAPIView):
     serializer_class = RideSerializer
 
     def get_queryset(self):
-        return own_rides(self.request.user)
+        return with_ride_details(own_rides(self.request.user))
 
 
 class RideAction(APIView):
@@ -104,6 +155,9 @@ class RateRide(APIView):
 
 
 class Tracking(RideDetail):
+    def get_queryset(self):
+        return own_rides(self.request.user).only("id")
+
     def get(self, request, *args, **kwargs):
         ride = self.get_object()
         points = list(ride.track_points.order_by("-recorded_at").values("latitude", "longitude", "recorded_at")[:1000])
@@ -123,7 +177,7 @@ class Offers(generics.ListAPIView):
         return RideOffer.objects.filter(
             driver=self.request.user, rejected_at__isnull=True, expires_at__gt=timezone.now(),
             ride__status="SEARCHING",
-        ).select_related("ride__quote").order_by("distance_km")
+        ).select_related("ride__quote").prefetch_related("ride__quote__stops").order_by("distance_km", "pk")
 
 
 class OfferAction(APIView):
@@ -166,7 +220,10 @@ class ScheduledRideList(generics.ListAPIView):
     serializer_class = ScheduledRideSerializer
 
     def get_queryset(self):
-        return ScheduledRide.objects.filter(rider=self.request.user).select_related("quote", "ride")
+        queryset = ScheduledRide.objects.filter(rider=self.request.user).select_related("quote").prefetch_related("quote__stops")
+        if self.request.query_params.get("pending") == "1":
+            queryset = queryset.filter(cancelled_at__isnull=True, ride__isnull=True)
+        return queryset.order_by("scheduled_for", "pk")
 
     def post(self, request):
         s = ScheduleRideInputSerializer(data=request.data)
@@ -176,9 +233,30 @@ class ScheduledRideList(generics.ListAPIView):
 
 
 class ScheduledRideDetail(APIView):
+    def patch(self, request, pk):
+        serializer = RescheduleRideInputSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        sr = services.reschedule_ride(request.user, pk, **serializer.validated_data)
+        return Response(ScheduledRideSerializer(sr).data)
+
     def delete(self, request, pk):
         sr = services.cancel_scheduled_ride(request.user, pk)
         return Response(ScheduledRideSerializer(sr).data)
+
+
+class ScheduledRideCalendar(APIView):
+    def get(self, request, pk):
+        from .calendar import reservation_calendar
+
+        sr = ScheduledRide.objects.filter(pk=pk, rider=request.user).select_related("quote").first()
+        if not sr:
+            raise NotFound("Scheduled ride not found.")
+        if sr.cancelled_at or sr.ride_id or sr.scheduled_for <= timezone.now():
+            raise services.Conflict("Calendar reminders are available for upcoming reservations.")
+        response = HttpResponse(reservation_calendar(sr), content_type="text/calendar; charset=utf-8")
+        response["Content-Disposition"] = f'attachment; filename="nori-reservation-{sr.pk}.ics"'
+        add_never_cache_headers(response)
+        return response
 
 
 class ValidatePromo(APIView):
@@ -264,10 +342,10 @@ class RideTipView(APIView):
 
 class RideMessagesView(APIView):
     def get(self, request, pk):
-        ride = own_rides(request.user).filter(pk=pk).first()
+        ride = own_rides(request.user).only("id").filter(pk=pk).first()
         if not ride:
             raise NotFound()
-        return Response(RideMessageSerializer(ride.messages.all(), many=True).data)
+        return Response(RideMessageSerializer(ride.messages.select_related("sender"), many=True).data)
 
     def post(self, request, pk):
         serializer = RideMessageInputSerializer(data=request.data)
@@ -280,7 +358,7 @@ class SavedPlacesView(generics.ListCreateAPIView):
     serializer_class = SavedPlaceSerializer
 
     def get_queryset(self):
-        return SavedPlace.objects.filter(user=self.request.user)
+        return SavedPlace.objects.filter(user=self.request.user).order_by("-created_at", "-id")
 
     def post(self, request):
         serializer = SavedPlaceInputSerializer(data=request.data)
@@ -290,9 +368,56 @@ class SavedPlacesView(generics.ListCreateAPIView):
 
 
 class SavedPlaceDetailView(APIView):
+    def patch(self, request, pk):
+        serializer = SavedPlaceInputSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        place = services.update_saved_place(request.user, pk, serializer.validated_data)
+        return Response(SavedPlaceSerializer(place).data)
+
     def delete(self, request, pk):
         services.delete_saved_place(request.user, pk)
         return Response({"detail": "Saved place deleted."})
+
+
+class FavouriteDriverList(generics.ListAPIView):
+    serializer_class = FavouriteDriverSerializer
+
+    def get_queryset(self):
+        services.require_role(self.request.user, "RIDER")
+        return FavouriteDriver.objects.filter(rider=self.request.user).select_related("driver").annotate(
+            average_rating=Avg("driver__received_ratings__score"),
+        ).order_by("-created_at", "-id")
+
+
+class SaveFavouriteDriver(APIView):
+    def post(self, request, pk):
+        favourite, created = support.save_favourite_driver(request.user, pk)
+        return Response(FavouriteDriverSerializer(favourite).data, status=201 if created else 200)
+
+
+class FavouriteDriverDetail(APIView):
+    def delete(self, request, pk):
+        support.remove_favourite_driver(request.user, pk)
+        return Response(status=204)
+
+
+class LostItemList(generics.ListAPIView):
+    serializer_class = LostItemSerializer
+
+    def get_queryset(self):
+        services.require_role(self.request.user, "RIDER")
+        return LostItem.objects.filter(reporter=self.request.user).select_related("ride__quote").order_by("-created_at", "-id")
+
+
+class ReportLostItem(APIView):
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "rides"
+
+    def post(self, request, pk):
+        serializer = LostItemInputSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        report, created = support.report_lost_item(request.user, pk, serializer.validated_data["description"])
+        return Response(LostItemSerializer(report).data, status=201 if created else 200)
 
 
 class LiveETAView(APIView):
@@ -322,7 +447,7 @@ class PublicTripShare(APIView):
 
     def get(self, request, token):
         share = TripShareToken.objects.select_related(
-            "ride__quote", "ride__driver", "ride__rider",
+            "ride__quote", "ride__driver__driver_profile__vehicle",
         ).filter(token=token, expires_at__gt=timezone.now()).first()
         if not share:
             raise NotFound("This trip link has expired or was revoked.")

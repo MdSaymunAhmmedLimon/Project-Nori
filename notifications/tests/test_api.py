@@ -16,6 +16,21 @@ class NotificationTests(APITestCase):
     def setUp(self):
         self.client.force_authenticate(self.user)
 
+    def test_summary_is_one_private_count_query(self):
+        Notification.objects.bulk_create([
+            Notification(user=self.user, message="Unread") for _ in range(25)
+        ])
+        Notification.objects.create(user=self.user, message="Already read", read_at=timezone.now())
+        Notification.objects.create(user=self.other, message="Other user's unread update")
+        with self.assertNumQueries(1):
+            response = self.client.get("/api/notifications/summary/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, {"unread_count": 25})
+        self.client.post("/api/notifications/read/", {})
+        self.assertEqual(self.client.get("/api/notifications/summary/").data, {"unread_count": 0})
+        self.client.force_authenticate(None)
+        self.assertEqual(self.client.get("/api/notifications/summary/").status_code, 401)
+
     def test_pagination_counts_unread_across_all_pages_and_only_own_notifications(self):
         Notification.objects.bulk_create([
             Notification(user=self.user, message=f"Update {number}") for number in range(25)

@@ -9,7 +9,14 @@
   const labels = {REQUESTED:'Ride requested', SEARCHING:'Finding your driver', ACCEPTED:'Your driver is assigned', DRIVER_ARRIVING:'Driver on the way', DRIVER_ARRIVED:'Your driver has arrived', IN_PROGRESS:'Enjoy your journey', COMPLETED:'You have arrived', CANCELLED:'Ride cancelled'};
   const state = {tab:'ride', quote:null, quoteVersion:0, requestId:null, active:null, selected:null, profile:null, vehicle:null, pick:'pickup', page:1, notificationPage:1, syncing:null, syncAgain:false, accountLoaded:false, online:false, sharing:false, locationTimer:null, socket:null, closing:false};
   let map, routeLine, markers = {}, tripSignature = '', toastTimer, refreshTimer;
-  let historyRequest = 0, notificationsRequest = 0;
+  let notificationSignature = '', socketFailures = 0;
+  let routeSignature = '';
+  let historyRequest = 0, notificationsRequest = 0, earningsRequest = 0;
+  let historyFilters = new URLSearchParams(), earningsFilters = new URLSearchParams();
+  let savedPlacesPage = 1, savedPlacesRequest = 0, editingPlaceId = null;
+  let bookingStops = [];
+  let scheduledPage = 1;
+  let favouritePage = 1, lostItemPage = 1, favouriteRequest = 0, lostItemRequest = 0;
   let initialRideId = new URLSearchParams(location.search).get('ride');
 
   function toast(message, error = false) {
@@ -22,7 +29,7 @@
     if (Array.isArray(data)) return data.map(explain).join(' ');
     return Object.entries(data || {}).map(([key, value]) => `${key === 'detail' || key === 'non_field_errors' ? '' : key.replaceAll('_', ' ') + ': '}${explain(value)}`).join(' ');
   }
-  async function api(path, {method = 'GET', data, optional = false} = {}) {
+  async function api(path, {method = 'GET', data, optional = false, signal} = {}) {
     const isFormData = typeof FormData !== 'undefined' && data instanceof FormData;
     const csrf = document.cookie.split('; ').find(row => row.startsWith('csrftoken='))?.split('=').slice(1).join('=');
     const headers = {'X-CSRFToken': decodeURIComponent(csrf || '')};
@@ -30,7 +37,7 @@
     const body = isFormData ? data : (data === undefined ? undefined : JSON.stringify(data));
     let response;
     try {
-      response = await fetch(`/api/${path}`, {method, credentials:'same-origin', headers, body});
+      response = await fetch(`/api/${path}`, {method, credentials:'same-origin', headers, body, signal});
     } catch (err) {
       if (optional) return null;
       throw err;
@@ -67,9 +74,13 @@
     if (!quote || !map) return;
     point('pickup', quote.pickup_latitude, quote.pickup_longitude);
     point('destination', quote.destination_latitude, quote.destination_longitude);
-    const line = [[Number(quote.pickup_latitude), Number(quote.pickup_longitude)], [Number(quote.destination_latitude), Number(quote.destination_longitude)]];
-    if (routeLine) map.removeLayer(routeLine);
-    routeLine = L.polyline(line, {color:'#285c4e', weight:4, dashArray:'7 8'}).addTo(map);
+    const line = [[Number(quote.pickup_latitude), Number(quote.pickup_longitude)], ...(quote.stops || []).map(stop => [Number(stop.latitude), Number(stop.longitude)]), [Number(quote.destination_latitude), Number(quote.destination_longitude)]];
+    const signature = JSON.stringify(line);
+    if (!routeLine || signature !== routeSignature) {
+      if (routeLine) map.removeLayer(routeLine);
+      routeLine = L.polyline(line, {color:'#285c4e', weight:4, dashArray:'7 8'}).addTo(map);
+      routeSignature = signature;
+    }
     if (fit) map.fitBounds(line, {padding:[55,80], maxZoom:15});
   }
   async function choosePoint(kind, lat, lon, customLabel = null) {
@@ -98,7 +109,7 @@
     invalidateQuote();
     state.pick = kind === 'pickup' ? 'destination' : 'pickup';
     $('#map-instruction').textContent = kind === 'pickup' ? 'Now choose your destination' : 'Your route is ready. See your fare to continue.';
-    if (form.elements.pickup_latitude.value && form.elements.destination_latitude.value) drawRoute(Object.fromEntries(new FormData(form)));
+    if (form.elements.pickup_latitude.value && form.elements.destination_latitude.value) drawRoute({...Object.fromEntries(new FormData(form)), stops:bookingStops});
   }
   function setupMap() {
     if (!window.L) { $('#map-instruction').textContent = 'Map unavailable. Enter coordinates to plan a ride.'; return; }
@@ -145,6 +156,7 @@
     if (tab === 'notifications') await loadNotifications();
     if (tab === 'stats') await loadStats();
     if (tab === 'payouts') await loadPayouts();
+    if (tab === 'account' && config.user.role === 'RIDER') await Promise.all([loadFavouriteDrivers(), loadLostItems()]);
   }
   function setDriverProfile(profile) {
     state.profile = profile; state.online = Boolean(profile?.is_online);
@@ -160,38 +172,131 @@
     $('#profile-review-note').textContent = profile?.review_note || 'Changes to driver or vehicle details require a new review.';
     if (profile?.latitude != null) point('driver', profile.latitude, profile.longitude);
   }
-  async function loadSavedPlaces() {
+  function resetPlaceEditor() {
+    editingPlaceId = null;
+    $('#save-place-form').reset();
+    $('#save-place-heading').textContent = 'Add a place';
+    $('#save-place-form [type="submit"]').textContent = 'Save place';
+    $('#cancel-place-edit').hidden = true;
+  }
+  async function prepareBooking() {
+    await sync();
+    if (state.active) throw new Error('Finish or cancel your current trip before planning another.');
+    state.selected = null;
+    history.replaceState({}, '', '/app/');
+    renderTrip(null);
+    invalidateQuote();
+  }
+  function renderBookingStops() {
+    $('#booking-stops').hidden = !bookingStops.length;
+    $('#booking-stops-summary').textContent = 'Stops: ' + bookingStops.map(stop => stop.label).join(' / ');
+  }
+  async function rideAgain(rideId) {
+    const ride = await api(`rides/${rideId}/`);
+    if (!['COMPLETED', 'CANCELLED'].includes(ride.status)) throw new Error('Choose a completed or cancelled trip to ride again.');
+    await prepareBooking();
+    const form = $('#quote-form');
+    for (const kind of ['pickup', 'destination']) {
+      for (const field of ['label', 'latitude', 'longitude']) form.elements[`${kind}_${field}`].value = ride.quote[`${kind}_${field}`];
+      form.elements[`${kind}_label`].dataset.generated = 'false';
+    }
+    form.elements.vehicle_class.value = ride.quote.vehicle_class || 'STANDARD';
+    bookingStops = (ride.quote.stops || []).map(({label, latitude, longitude}) => ({label, latitude, longitude}));
+    renderBookingStops();
+    $('#booking-type-select').value = 'NOW';
+    $('#schedule-picker-row').hidden = true;
+    $('#schedule-datetime').value = '';
+    $('#schedule-datetime').required = false;
+    $('#schedule-datetime').disabled = true;
+    document.querySelectorAll('.places-dropdown').forEach(node => { node.hidden = true; });
+    drawRoute(ride.quote, true);
+    await changeTab('ride');
+    form.querySelector('[type="submit"]').focus();
+    toast('Route copied. Check the details and get a fresh fare before booking.');
+  }
+  async function loadSavedPlaces(page = savedPlacesPage) {
     if (config.user.role !== 'RIDER') return;
-    try {
-      const places = await api('rides/saved-places/', {optional:true});
-      const list = $('#saved-places-list');
-      if (!list) return;
-      list.innerHTML = places && places.length ? places.map(p => `
-        <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--line);">
-          <div>
-            <strong>${esc(p.label)}</strong> <span class="muted" style="font-size:12px;">(${esc(p.address)})</span>
-          </div>
-          <div style="display:flex;gap:6px;">
-            <button type="button" class="button secondary small use-saved-place" data-lat="${p.latitude}" data-lon="${p.longitude}" data-label="${esc(p.label)}">Use</button>
-            <button type="button" class="plain-link delete-saved-place" data-id="${p.id}" style="color:var(--error,#d32f2f);font-size:12px;">Delete</button>
-          </div>
-        </div>
-      `).join('') : '<p class="muted" style="font-size:13px;">No saved places yet.</p>';
-
-      list.querySelectorAll('.use-saved-place').forEach(btn => {
-        btn.addEventListener('click', () => {
-          choosePoint(state.pick, btn.dataset.lat, btn.dataset.lon, btn.dataset.label);
-          changeTab('ride');
-        });
-      });
-      list.querySelectorAll('.delete-saved-place').forEach(btn => {
-        btn.addEventListener('click', () => busy(btn, async () => {
-          await api(`rides/saved-places/${btn.dataset.id}/`, {method:'DELETE'});
-          toast('Saved place deleted.');
-          await loadSavedPlaces();
-        }));
-      });
-    } catch (_) {}
+    const request = ++savedPlacesRequest;
+    const data = await api(`rides/saved-places/?page=${page}`);
+    if (request !== savedPlacesRequest) return;
+    savedPlacesPage = page;
+    const places = data.results;
+    for (const selector of ['#saved-places-list', '#booking-saved-places-list']) {
+      const list = $(selector);
+      const canEdit = selector === '#saved-places-list';
+      list.innerHTML = places.length ? places.map(place => `<article class="saved-place-row">
+        <div><strong>${esc(place.label)}</strong><p class="muted">${esc(place.address)}</p></div>
+        <div class="saved-place-actions">
+          <button type="button" class="button secondary small" data-place="${place.id}" data-use-place="pickup">Pickup</button>
+          <button type="button" class="button secondary small" data-place="${place.id}" data-use-place="destination">Destination</button>
+          ${canEdit ? `<button type="button" class="plain-link" data-edit-place="${place.id}">Edit</button><button type="button" class="plain-link" data-delete-place="${place.id}">Delete</button>` : ''}
+        </div></article>`).join('') : '<p class="muted">No saved places yet. Add one in My profile.</p>';
+      if (data.previous || data.next) list.innerHTML += `<div class="pagination"><button type="button" class="button secondary small" data-place-page="${page - 1}" ${data.previous ? '' : 'disabled'}>Previous places</button><span>Page ${page}</span><button type="button" class="button secondary small" data-place-page="${page + 1}" ${data.next ? '' : 'disabled'}>Next places</button></div>`;
+      list.querySelectorAll('[data-use-place]').forEach(button => button.addEventListener('click', () => busy(button, async () => {
+        const place = places.find(item => item.id === Number(button.dataset.place));
+        await prepareBooking();
+        await choosePoint(button.dataset.usePlace, place.latitude, place.longitude, place.address);
+        await changeTab('ride');
+        $('#quote-form').scrollIntoView({block:'nearest'});
+        toast(`${place.label} selected as ${button.dataset.usePlace}.`);
+      })));
+      list.querySelectorAll('[data-edit-place]').forEach(button => button.addEventListener('click', () => {
+        const place = places.find(item => item.id === Number(button.dataset.editPlace));
+        editingPlaceId = place.id;
+        populate($('#save-place-form'), place);
+        $('#save-place-heading').textContent = 'Edit saved place';
+        $('#save-place-form [type="submit"]').textContent = 'Save changes';
+        $('#cancel-place-edit').hidden = false;
+        $('#save-place-form [name="label"]').focus();
+      }));
+      list.querySelectorAll('[data-delete-place]').forEach(button => button.addEventListener('click', () => busy(button, async () => {
+        const id = Number(button.dataset.deletePlace);
+        await api(`rides/saved-places/${id}/`, {method:'DELETE'});
+        if (editingPlaceId === id) resetPlaceEditor();
+        await loadSavedPlaces(1);
+        toast('Saved place deleted.');
+      })));
+      list.querySelectorAll('[data-place-page]').forEach(button => button.addEventListener('click', () => busy(button, () => loadSavedPlaces(Number(button.dataset.placePage)))));
+    }
+  }
+  async function loadFavouriteDrivers(page = favouritePage) {
+    if (config.user.role !== 'RIDER') return;
+    const request = ++favouriteRequest;
+    const data = await api(`rides/favourite-drivers/?page=${page}`);
+    if (request !== favouriteRequest) return;
+    favouritePage = page;
+    const list = $('#favourite-drivers-list');
+    list.innerHTML = data.results.length ? data.results.map(driver => `<article class="saved-place-row">
+      <div class="panel-heading"><div><strong>${esc(driver.driver_name)}</strong><p class="muted">${driver.driver_rating == null ? 'No ratings yet' : Number(driver.driver_rating).toFixed(1) + ' / 5 rider rating'}</p></div>
+      <button type="button" class="plain-link" data-remove-favourite="${driver.id}" aria-label="Remove ${esc(driver.driver_name)} from favourites">Remove</button></div></article>`).join('') : '<p class="muted">No favourite drivers yet. Save a driver from a completed trip.</p>';
+    if (data.previous || data.next) list.innerHTML += `<div class="pagination"><button type="button" class="button secondary small" data-favourite-page="${page - 1}" ${data.previous ? '' : 'disabled'}>Previous drivers</button><span>Page ${page}</span><button type="button" class="button secondary small" data-favourite-page="${page + 1}" ${data.next ? '' : 'disabled'}>Next drivers</button></div>`;
+    list.querySelectorAll('[data-remove-favourite]').forEach(button => button.addEventListener('click', () => busy(button, async () => {
+      const favourite = data.results.find(item => item.id === Number(button.dataset.removeFavourite));
+      await api(`rides/favourite-drivers/${button.dataset.removeFavourite}/`, {method:'DELETE'});
+      const saveButton = $('#save-favourite-driver');
+      if (saveButton?.dataset.driverId === String(favourite.driver_id)) {
+        saveButton.disabled = false; saveButton.dataset.restDisabled = 'false'; saveButton.textContent = 'Save driver to favourites';
+      }
+      await loadFavouriteDrivers(1);
+      toast('Driver removed from favourites.');
+    })));
+    list.querySelectorAll('[data-favourite-page]').forEach(button => button.addEventListener('click', () => busy(button, () => loadFavouriteDrivers(Number(button.dataset.favouritePage)))));
+  }
+  async function loadLostItems(page = lostItemPage) {
+    if (config.user.role !== 'RIDER') return;
+    const request = ++lostItemRequest;
+    const data = await api(`rides/lost-items/?page=${page}`);
+    if (request !== lostItemRequest) return;
+    lostItemPage = page;
+    const list = $('#lost-items-list');
+    const statuses = {REPORTED:'Reported', CONTACTING:'Contacting driver', FOUND:'Found', RETURNED:'Returned', NOT_FOUND:'Not found'};
+    list.innerHTML = data.results.length ? data.results.map(report => `<article class="support-report">
+      <div class="panel-heading"><strong>Report #${report.id}</strong><span class="pill ${report.status === 'RETURNED' ? 'success' : ''}">${esc(statuses[report.status] || report.status)}</span></div>
+      <p class="support-description">${esc(report.description)}</p><p class="muted">${esc(report.pickup_label)} to ${esc(report.destination_label)}</p>
+      <p class="form-hint">Reported ${esc(date(report.created_at))}${report.resolved_at ? '<br>Resolved ' + esc(date(report.resolved_at)) : ''}</p>
+      <a class="plain-link" href="/app/?ride=${encodeURIComponent(report.ride)}">View trip</a></article>`).join('') : '<p class="muted">No lost-item reports. Open a completed trip to report something you left behind.</p>';
+    if (data.previous || data.next) list.innerHTML += `<div class="pagination"><button type="button" class="button secondary small" data-lost-page="${page - 1}" ${data.previous ? '' : 'disabled'}>Previous reports</button><span>Page ${page}</span><button type="button" class="button secondary small" data-lost-page="${page + 1}" ${data.next ? '' : 'disabled'}>Next reports</button></div>`;
+    list.querySelectorAll('[data-lost-page]').forEach(button => button.addEventListener('click', () => busy(button, () => loadLostItems(Number(button.dataset.lostPage)))));
   }
   async function loadEmergencyContacts() {
     const list = $('#emergency-contacts-list, #driver-emergency-contacts-list');
@@ -225,7 +330,7 @@
       }
     } catch (_) {}
     if (config.user.role === 'RIDER') {
-      await Promise.all([loadSavedPlaces(), loadEmergencyContacts()]);
+      await Promise.all([loadSavedPlaces(), loadEmergencyContacts(), loadFavouriteDrivers(), loadLostItems()]);
     }
     if (config.user.role === 'DRIVER') {
       const [profile, vehicle] = await Promise.all([api('drivers/profile/', {optional:true}), api('drivers/vehicle/', {optional:true})]);
@@ -306,6 +411,37 @@
     `) : '';
 
     $('#trip-content').innerHTML = `<div class="trip-title"><h2>${esc(labels[ride.status])}</h2><div style="display:flex;gap:6px;align-items:center;"><span class="pill ${completed ? 'success' : cancelled ? 'error' : ''}">${esc(ride.status.toLowerCase().replaceAll('_',' '))}</span><span class="pill success" style="font-size:11px;">👤 Private · 1 Rider</span></div></div><div class="route-summary"><small>PICKUP</small>${esc(ride.quote.pickup_label)}<small>DESTINATION</small>${esc(ride.quote.destination_label)}</div><div class="fare-meta"><span>${amount(ride.quote.fare, ride.quote.currency)}</span><span>${esc(ride.quote.distance_km)} km est.</span>${ride.quote.vehicle_class ? `<span class="pill" style="font-size:11px;">${esc(ride.quote.vehicle_class)}</span>` : ''}</div>${person}${cancelled ? `<p class="muted">${esc(ride.cancellation_reason || 'This ride was cancelled.')}</p>` : ''}<ol class="timeline">${ride.events.map(event => `<li>${esc(labels[event.status])}<time>${esc(date(event.created_at))}</time></li>`).join('')}</ol>${actionButton}${canCancel ? '<form id="cancel-form" class="cancel-form"><label>Reason for cancelling (optional)<input name="reason" maxlength="300" placeholder="Let us know what changed"></label><button type="submit" class="button danger full">Cancel ride</button></form>' : ''}${sosButton}${chatSection}${payment}${tipSection}${rating}${completed || cancelled ? '<button class="plain-link" id="close-trip">Back to your next journey →</button>' : ''}`;
+    if (config.user.role === 'RIDER' && (completed || cancelled)) {
+      const again = document.createElement('button'); again.type = 'button'; again.className = 'button secondary full';
+      again.textContent = 'Ride again'; again.id = 'ride-again';
+      again.addEventListener('click', () => busy(again, () => rideAgain(ride.id)));
+      $('#close-trip').before(again);
+    }
+    if (config.user.role === 'RIDER' && completed) {
+      const support = document.createElement('section'); support.className = 'trip-support';
+      support.innerHTML = `${ride.driver ? '<button type="button" id="save-favourite-driver" class="button secondary full">Save driver to favourites</button>' : ''}
+        <details><summary>Left something behind?</summary>
+          <form id="lost-item-form"><label>Describe your lost item<textarea name="description" maxlength="500" rows="3" placeholder="What did you leave, and where were you sitting?" required></textarea></label><button type="submit" class="button secondary small">Report lost item</button></form>
+        </details><button type="button" id="view-lost-items" class="plain-link">View my lost-item reports</button>`;
+      $('#close-trip').before(support);
+      if ($('#save-favourite-driver')) $('#save-favourite-driver').dataset.driverId = String(ride.driver.id);
+      $('#save-favourite-driver')?.addEventListener('click', event => busy(event.currentTarget, async () => {
+        const button = event.currentTarget;
+        await api(`rides/${ride.id}/favourite-driver/`, {method:'POST', data:{}});
+        button.textContent = 'Driver saved'; button.dataset.restDisabled = 'true';
+        await loadFavouriteDrivers(1);
+        toast('Driver saved to your favourites in My profile.');
+      }));
+      onForm('#lost-item-form', async (data, form) => {
+        await api(`rides/${ride.id}/lost-items/`, {method:'POST', data});
+        form.reset();
+        await loadLostItems(1);
+        toast('Report received. Track its progress in My profile.');
+      });
+      $('#view-lost-items').addEventListener('click', event => busy(event.currentTarget, async () => {
+        await changeTab('account'); $('#lost-items-panel').scrollIntoView({block:'start'});
+      }));
+    }
     $('#trip-content').querySelectorAll('[data-ride-action]').forEach(button => button.addEventListener('click', () => busy(button, async () => {
       state.selected = await api(`rides/${ride.id}/actions/`, {method:'POST', data:{action:button.dataset.rideAction}}); await sync();
     })));
@@ -400,54 +536,173 @@
       await sync();
     })));
   }
-  async function loadHistory(page = state.page) {
+  async function loadHistory(page = state.page, preserveEditor = false) {
+    // Polling must not discard a date the rider is currently editing.
+    if (preserveEditor && $('#history-list .reschedule-form:not([hidden])')) return;
     const request = ++historyRequest;
-    const status = $('#history-filter').value;
     const [data, scheduled] = await Promise.all([
-      api(`rides/?page=${page}${status ? '&status=' + encodeURIComponent(status) : ''}`),
-      config.user.role === 'RIDER' && !status && page === 1 ? api('rides/schedule/', {optional:true}) : Promise.resolve(null),
+      api(`rides/?page=${page}&${historyFilters}`),
+      config.user.role === 'RIDER' && !historyFilters.size && page === 1 ? api(`rides/schedule/?pending=1&page=${scheduledPage}`) : Promise.resolve(null),
     ]);
     if (request !== historyRequest) return;
+    if (preserveEditor && $('#history-list .reschedule-form:not([hidden])')) return;
     state.page = page;
     let scheduledHtml = '';
     const pendingScheduled = (scheduled?.results || scheduled || []).filter(s => !s.cancelled_at && !s.ride);
-    if (pendingScheduled.length) {
-      scheduledHtml = `<div class="scheduled-box" style="margin-bottom:16px;background:var(--bg-subtle,#f8f9fa);border:1px solid var(--line);border-radius:8px;padding:12px;"><strong style="display:block;margin-bottom:8px;">📅 Upcoming Scheduled Rides (Private)</strong>${pendingScheduled.map(s => `
-        <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--line);">
-          <div>
-            <div style="font-weight:600;">${esc(s.quote.pickup_label)} → ${esc(s.quote.destination_label)}</div>
-            <small class="muted">Scheduled for ${esc(date(s.scheduled_for))} · ${amount(s.quote.fare, s.quote.currency)}</small>
-          </div>
-          <button class="button danger small cancel-scheduled-btn" data-id="${s.id}">Cancel</button>
-        </div>
-      `).join('')}</div>`;
+    if (pendingScheduled.length || scheduledPage > 1) {
+      scheduledHtml = `<section class="scheduled-box" aria-label="Upcoming reservations"><h3>Upcoming reservations</h3>
+        <p class="form-hint">Times use ${esc(Intl.DateTimeFormat().resolvedOptions().timeZone)}. Calendar reminders do not sync: update them after changing or cancelling a reservation.</p>
+        ${pendingScheduled.map(s => {
+          const upcoming = new Date(s.scheduled_for).getTime() > Date.now();
+          return `<article class="scheduled-card">
+            <strong>${esc(s.quote.pickup_label)} &rarr; ${esc(s.quote.destination_label)}</strong>
+            <p>Pickup ${esc(date(s.scheduled_for))} &middot; ${amount(s.quote.fare, s.quote.currency)}</p>
+            ${upcoming ? '' : '<p class="form-hint">Pickup is due. Waiting for dispatch; reservations expire after 15 minutes.</p>'}
+            <div class="scheduled-actions">
+              ${upcoming ? `<button type="button" class="button secondary small" data-edit-schedule="${s.id}">Change pickup time</button>
+              <button type="button" class="button secondary small" data-calendar="${s.id}">Add to calendar</button>` : ''}
+              <button type="button" class="button danger small cancel-scheduled-btn" data-id="${s.id}">Cancel reservation</button>
+            </div>
+            <form class="reschedule-form" id="reschedule-${s.id}" data-id="${s.id}" hidden>
+              <label for="reschedule-time-${s.id}">New pickup date &amp; time</label>
+              <input type="datetime-local" id="reschedule-time-${s.id}" name="scheduled_for" value="${localDateTime(s.scheduled_for)}" required>
+              <p class="form-hint">Choose more than 15 minutes and up to 7 days ahead. Your route, fare and payment method stay the same.</p>
+              <div class="scheduled-actions"><button class="button small" type="submit">Save pickup time</button>
+              <button class="button secondary small" type="button" data-close-schedule>Keep current time</button></div>
+            </form>
+          </article>`;
+        }).join('')}
+        <div class="scheduled-actions">
+          <button type="button" class="button secondary small" data-scheduled-page="${scheduledPage-1}" ${!scheduled?.previous ? 'disabled' : ''}>Earlier reservations</button>
+          <span>Page ${scheduledPage} &middot; ${scheduled?.count || 0} reservations</span>
+          <button type="button" class="button secondary small" data-scheduled-page="${scheduledPage+1}" ${!scheduled?.next ? 'disabled' : ''}>Later reservations</button>
+        </div></section>`;
     }
-    $('#history-list').innerHTML = scheduledHtml + (data.results.length ? data.results.map(ride => `<div class="trip-row"><span class="trip-icon">↗</span><div><h3>${esc(ride.quote.destination_label)}</h3><p>From ${esc(ride.quote.pickup_label)}</p><p>${esc(date(ride.created_at))}</p></div><div class="price">${amount(ride.quote.fare, ride.quote.currency)}<span class="pill">${esc(ride.status.toLowerCase().replaceAll('_',' '))}</span></div><button data-history="${esc(ride.id)}" aria-label="View trip to ${esc(ride.quote.destination_label)}">View →</button></div>`).join('') : '<div class="empty-state"><span class="empty-icon">◷</span>Your journeys will appear here.</div>');
+    $('#history-list').innerHTML = scheduledHtml + (data.results.length ? data.results.map(ride => `<div class="trip-row"><span class="trip-icon">↗</span><div><h3>${esc(ride.quote.destination_label)}</h3><p>From ${esc(ride.quote.pickup_label)}</p><p>${esc(date(ride.created_at))}</p></div><div class="price">${amount(ride.quote.fare, ride.quote.currency)}<span class="pill">${esc(ride.status.toLowerCase().replaceAll('_',' '))}</span></div><button data-history="${esc(ride.id)}" aria-label="View trip to ${esc(ride.quote.destination_label)}">View →</button></div>`).join('') : '<div class="empty-state"><span class="empty-icon">◷</span>No trips match these filters. Try another route or reset the filters.</div>');
     $('#history-prev').disabled = !data.previous; $('#history-next').disabled = !data.next; $('#history-page').textContent = `Page ${state.page} · ${data.count} trips`;
     $('#history-prev').dataset.restDisabled = String(!data.previous); $('#history-next').dataset.restDisabled = String(!data.next);
     $('#history-list').querySelectorAll('[data-history]').forEach(button => button.addEventListener('click', () => busy(button, async () => {
       state.selected = await api(`rides/${button.dataset.history}/`); renderTrip(state.selected); await changeTab('ride'); $('#trip-panel').scrollIntoView({behavior:'smooth',block:'nearest'});
     })));
+    if (config.user.role === 'RIDER') $('#history-list').querySelectorAll('[data-history]').forEach(viewButton => {
+      const ride = data.results.find(item => item.id === viewButton.dataset.history);
+      if (!['COMPLETED', 'CANCELLED'].includes(ride.status)) return;
+      const actions = document.createElement('div'); actions.className = 'trip-history-actions';
+      viewButton.replaceWith(actions); actions.appendChild(viewButton);
+      const again = document.createElement('button'); again.type = 'button'; again.className = 'plain-link';
+      again.textContent = 'Ride again'; again.dataset.rebook = ride.id;
+      again.addEventListener('click', () => busy(again, () => rideAgain(ride.id)));
+      actions.appendChild(again);
+    });
     $('#history-list').querySelectorAll('.cancel-scheduled-btn').forEach(button => button.addEventListener('click', () => busy(button, async () => {
       await api(`rides/schedule/${button.dataset.id}/`, {method:'DELETE'});
+      scheduledPage = 1;
       toast('Scheduled ride cancelled.');
       await loadHistory();
     })));
+    $('#history-list').querySelectorAll('[data-edit-schedule]').forEach(button => button.addEventListener('click', () => {
+      const form = $(`#reschedule-${button.dataset.editSchedule}`);
+      form.hidden = false;
+      setScheduleBounds(form.elements.scheduled_for);
+      form.elements.scheduled_for.focus();
+    }));
+    $('#history-list').querySelectorAll('[data-close-schedule]').forEach(button => button.addEventListener('click', () => {
+      button.closest('form').hidden = true;
+      loadHistory().catch(error => toast(error.message, true));
+    }));
+    $('#history-list').querySelectorAll('.reschedule-form').forEach(form => form.addEventListener('submit', event => {
+      event.preventDefault();
+      busy(form.querySelector('[type="submit"]'), async () => {
+        const scheduledFor = validateScheduleInput(form.elements.scheduled_for);
+        await api(`rides/schedule/${form.dataset.id}/`, {method:'PATCH', data:{scheduled_for:scheduledFor}});
+        form.hidden = true;
+        scheduledPage = 1;
+        toast('Pickup time updated. Replace your calendar reminder if you downloaded one.');
+        await loadHistory();
+      });
+    }));
+    $('#history-list').querySelectorAll('[data-calendar]').forEach(button => button.addEventListener('click', () => busy(button, async () => {
+      const id = button.dataset.calendar;
+      await downloadFile(`/api/rides/schedule/${id}/calendar/`, `nori-reservation-${id}.ics`);
+      toast('Open the downloaded file in your calendar app to add the reminder.');
+    })));
+    $('#history-list').querySelectorAll('[data-scheduled-page]').forEach(button => button.addEventListener('click', () => busy(button, async () => {
+      scheduledPage = Number(button.dataset.scheduledPage);
+      await loadHistory();
+    })));
+  }
+  function reportParams(form) {
+    const params = new URLSearchParams();
+    for (const [key, value] of new FormData(form)) if (value.trim()) params.set(key, value.trim());
+    if (params.get('date_from') && params.get('date_to') && params.get('date_from') > params.get('date_to')) {
+      throw new Error('End date must be on or after start date.');
+    }
+    return params;
+  }
+  async function downloadFile(path, filename) {
+    const response = await fetch(path, {credentials:'same-origin'});
+    if (!response.ok) {
+      const error = await response.json().catch(() => null);
+      throw new Error(explain(error) || 'The file could not be downloaded. Please try again.');
+    }
+    const url = URL.createObjectURL(await response.blob());
+    const link = document.createElement('a');
+    link.href = url; link.download = filename;
+    document.body.appendChild(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  }
+  async function exportHistory() {
+    await downloadFile(`/api/rides/export/?${historyFilters}`, 'nori-trips.csv');
+    toast('Your trip report has been downloaded.');
   }
   async function loadEarnings() {
     if (config.user.role !== 'DRIVER') return;
-    const data = await api('payments/earnings/');
-    $('#earnings-content').innerHTML = data.totals.length ? data.totals.map(row => `<div class="eyebrow">${esc(row.currency)} · ALL TIME</div><div class="metrics"><article class="metric"><span>Completed trips</span><strong>${row.trips}</strong></article><article class="metric"><span>Gross fares</span><strong>${amount(row.gross, row.currency)}</strong></article><article class="metric"><span>Platform fees</span><strong>${amount(row.platform_fees, row.currency)}</strong></article><article class="metric"><span>Your net earnings</span><strong>${amount(row.net, row.currency)}</strong></article></div><div class="panel"><h2>Payment breakdown</h2><p class="muted">Net earnings paid: ${amount(row.paid_net, row.currency)}<br>Net earnings awaiting payment: ${amount(row.pending_net, row.currency)}<br>Cash you collected: ${amount(row.cash_collected, row.currency)}<br>Card earnings after fees: ${amount(row.card_net, row.currency)}</p><p class="form-hint">These are trip records. Bank payouts and settlement of platform fees are handled separately.</p></div>`).join('') : '<div class="panel empty-state"><span class="empty-icon">◈</span>Every journey adds up.<br>Your earnings will appear after your first completed trip.</div>';
+    const request = ++earningsRequest;
+    const data = await api(`payments/earnings/?${earningsFilters}`);
+    if (request !== earningsRequest) return;
+    const period = earningsFilters.size ? 'SELECTED DATES' : 'ALL TIME';
+    $('#earnings-content').innerHTML = data.totals.length ? data.totals.map(row => {
+      const days = data.daily.filter(day => day.currency === row.currency);
+      const peak = Math.max(1, ...days.map(day => Number(day.net)));
+      return `<div class="eyebrow">${esc(row.currency)} &middot; ${period}</div>
+        <div class="metrics">
+          <article class="metric"><span>Completed trips</span><strong>${row.trips}</strong></article>
+          <article class="metric"><span>Gross fares</span><strong>${amount(row.gross, row.currency)}</strong></article>
+          <article class="metric"><span>Platform fees</span><strong>${amount(row.platform_fees, row.currency)}</strong></article>
+          <article class="metric"><span>Your net earnings</span><strong>${amount(row.net, row.currency)}</strong></article>
+        </div>
+        <div class="panel"><h2>Payment breakdown</h2><dl class="receipt-details">
+          <div><dt>Average net per trip</dt><dd>${amount(row.average_net, row.currency)}</dd></div>
+          <div><dt>Net earnings paid</dt><dd>${amount(row.paid_net, row.currency)}</dd></div>
+          <div><dt>Net earnings awaiting payment</dt><dd>${amount(row.pending_net, row.currency)}</dd></div>
+          <div><dt>Cash you collected</dt><dd>${amount(row.cash_collected, row.currency)}</dd></div>
+          <div><dt>Paid card earnings after fees</dt><dd>${amount(row.card_net, row.currency)}</dd></div>
+        </dl><p class="form-hint">These are trip records. Bank payouts and settlement of platform fees are handled separately.</p></div>
+        <div class="panel"><h2>Daily earnings</h2>
+          <p class="form-hint">${esc(data.trend_from)} through ${esc(data.trend_to)} (UTC), within your selected dates. Net includes paid and pending fares.</p>
+          ${days.length ? `<div class="report-table-scroll" tabindex="0" role="region" aria-label="Daily earnings in ${esc(row.currency)}"><table class="report-table"><caption class="sr-only">Daily earnings in ${esc(row.currency)}</caption><thead><tr><th scope="col">Date</th><th scope="col">Trips</th><th scope="col">Net earnings</th><th scope="col">Awaiting payment</th></tr></thead><tbody>${days.map(day => `<tr><th scope="row">${esc(day.date)}</th><td>${day.trips}</td><td>${amount(day.net, row.currency)}<meter min="0" max="${peak}" value="${Math.max(0, Number(day.net))}" aria-label="Net earnings for ${esc(day.date)}">${amount(day.net, row.currency)}</meter></td><td>${amount(day.pending_net, row.currency)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">No completed trips in this daily breakdown. Select an earlier end date to view older days.</p>'}
+        </div>`;
+    }).join('') : '<div class="panel empty-state">No completed trips in this period. Try a different date range.</div>';
+  }
+  function updateNotificationCount(unread) {
+    $('#notification-count').textContent = unread; $('#notification-count').hidden = unread === 0;
+    $('#mark-read').disabled = unread === 0;
+    $('#mark-read').dataset.restDisabled = String(unread === 0);
+  }
+  async function loadNotificationSummary() {
+    const request = ++notificationsRequest;
+    const data = await api('notifications/summary/');
+    if (request === notificationsRequest) updateNotificationCount(data.unread_count);
   }
   async function loadNotifications(page = state.notificationPage) {
     const request = ++notificationsRequest;
     const data = await api(`notifications/?page=${page}`);
     if (request !== notificationsRequest) return;
     state.notificationPage = page;
-    const unread = data.unread_count;
-    $('#notification-count').textContent = unread; $('#notification-count').hidden = unread === 0;
-    $('#mark-read').disabled = unread === 0;
-    $('#mark-read').dataset.restDisabled = String(unread === 0);
+    updateNotificationCount(data.unread_count);
+    const signature = JSON.stringify([page, data]);
+    if (signature === notificationSignature) return;
+    notificationSignature = signature;
     $('#notifications-prev').disabled = !data.previous; $('#notifications-next').disabled = !data.next;
     $('#notifications-prev').dataset.restDisabled = String(!data.previous); $('#notifications-next').dataset.restDisabled = String(!data.next);
     $('#notifications-page').textContent = `Page ${page} · ${data.count} updates`;
@@ -471,15 +726,24 @@
         initialRideId = null;
       }
       const previous = state.active;
-      state.active = await api('rides/current/');
+      const [active, profile] = await Promise.all([
+        api('rides/current/'),
+        config.user.role === 'DRIVER' ? api('drivers/profile/', {optional:true}) : Promise.resolve(null),
+      ]);
+      state.active = active;
       if (state.active && (!state.selected || state.selected.id === state.active.id)) state.selected = state.active;
       else if (state.selected) state.selected = await api(`rides/${state.selected.id}/`);
       else if (previous && !state.active) state.selected = await api(`rides/${previous.id}/`);
       renderTrip(state.selected || state.active);
-      if (config.user.role === 'DRIVER') { setDriverProfile(await api('drivers/profile/', {optional:true})); await loadOffers(); }
-      await loadNotifications();
-      if (state.tab === 'history') await loadHistory();
-      if (state.tab === 'earnings') await loadEarnings();
+      const updates = [state.tab === 'notifications' ? loadNotifications() : loadNotificationSummary()];
+      if (config.user.role === 'DRIVER') { setDriverProfile(profile); updates.push(loadOffers()); }
+      if (state.tab === 'history') updates.push(loadHistory(state.page, true));
+      if (state.tab === 'earnings') updates.push(loadEarnings());
+      if (state.tab === 'account' && config.user.role === 'RIDER') updates.push(loadFavouriteDrivers(), loadLostItems());
+      // Wait for every update before allowing the next refresh to begin.
+      const results = await Promise.allSettled(updates);
+      const failure = results.find(result => result.status === 'rejected');
+      if (failure) throw failure.reason;
   }
   function connect() {
     if (state.closing) return;
@@ -487,10 +751,14 @@
     state.socket = socket;
     socket.onmessage = event => {
       const data = JSON.parse(event.data);
-      if (data.event === 'connected') { $('#connection-status').textContent = 'Live updates connected'; return; }
-      if (data.event !== 'pong') { clearTimeout(refreshTimer); refreshTimer = setTimeout(() => sync().catch(error => toast(error.message,true)), 200); }
+      if (data.event === 'connected') { socketFailures = 0; $('#connection-status').textContent = 'Live updates connected'; return; }
+      if (data.event !== 'pong' && !document.hidden) { clearTimeout(refreshTimer); refreshTimer = setTimeout(() => sync().catch(error => toast(error.message,true)), 200); }
     };
-    socket.onclose = () => { $('#connection-status').textContent = 'Refreshing every 8 seconds'; if (!state.closing) setTimeout(connect, 6000); };
+    socket.onclose = () => {
+      $('#connection-status').textContent = 'Refreshing every 8 seconds';
+      const delay = Math.min(60000, 6000 * 2 ** Math.min(socketFailures++, 4));
+      if (!state.closing) setTimeout(connect, delay);
+    };
     socket.onerror = () => socket.close();
   }
 
@@ -500,21 +768,77 @@
     state.quoteVersion++;
     state.quote = null; state.requestId = null; state.appliedPromo = null; $('#quote-result').hidden = true;
   }
-  $('#quote-form')?.addEventListener('input', event => { invalidateQuote(); if (event.target.name.endsWith('_label')) event.target.dataset.generated = 'false'; });
+  $('#quote-form')?.addEventListener('input', event => {
+    invalidateQuote();
+    if (event.target.name.endsWith('_label')) {
+      event.target.dataset.generated = 'false';
+      const kind = event.target.name.split('_')[0];
+      for (const field of ['latitude', 'longitude']) event.currentTarget.elements[`${kind}_${field}`].value = '';
+      if (markers[kind]) { map?.removeLayer(markers[kind]); delete markers[kind]; }
+      if (routeLine) { map?.removeLayer(routeLine); routeLine = null; }
+    }
+  });
+  $('#swap-route')?.addEventListener('click', event => busy(event.currentTarget, async () => {
+    if (state.active || state.selected) throw new Error('Return to booking before changing your route.');
+    const form = $('#quote-form');
+    if (!form.elements.pickup_label.value.trim() || !form.elements.destination_label.value.trim()) throw new Error('Choose both pickup and destination before swapping.');
+    for (const field of ['label', 'latitude', 'longitude']) {
+      const pickup = form.elements[`pickup_${field}`], destination = form.elements[`destination_${field}`];
+      [pickup.value, destination.value] = [destination.value, pickup.value];
+    }
+    bookingStops.reverse(); renderBookingStops();
+    invalidateQuote();
+    document.querySelectorAll('.places-dropdown').forEach(node => { node.hidden = true; });
+    if (routeLine) { map?.removeLayer(routeLine); routeLine = null; }
+    for (const kind of ['pickup', 'destination']) {
+      if (markers[kind]) { map?.removeLayer(markers[kind]); delete markers[kind]; }
+      form.elements[`${kind}_label`].dataset.generated = 'false';
+      if (form.elements[`${kind}_latitude`].value && form.elements[`${kind}_longitude`].value) point(kind, form.elements[`${kind}_latitude`].value, form.elements[`${kind}_longitude`].value);
+    }
+    if (form.elements.pickup_latitude.value && form.elements.destination_latitude.value) drawRoute({...Object.fromEntries(new FormData(form)), stops:bookingStops}, true);
+    toast('Pickup and destination swapped. Get a fresh fare to continue.');
+  }));
+  $('#clear-booking-stops')?.addEventListener('click', () => {
+    bookingStops = []; renderBookingStops(); invalidateQuote();
+    const route = Object.fromEntries(new FormData($('#quote-form')));
+    if (route.pickup_latitude && route.destination_latitude) drawRoute(route);
+  });
   $('#use-pickup-location')?.addEventListener('click', event => busy(event.currentTarget, async () => { const coords = await gps(); choosePoint('pickup', coords.latitude, coords.longitude); map?.setView([coords.latitude,coords.longitude],14); }));
   
   const bookingTypeSelect = $('#booking-type-select');
   const scheduleRow = $('#schedule-picker-row');
   const scheduleInput = $('#schedule-datetime');
+  function localDateTime(value) {
+    const d = new Date(value);
+    const pad = number => String(number).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+  function setScheduleBounds(input) {
+    input.min = localDateTime(Date.now() + 16 * 60000);
+    input.max = localDateTime(Date.now() + 7 * 86400000);
+  }
+  function validateScheduleInput(input) {
+    const value = input.value;
+    const parsed = new Date(value);
+    if (!value || Number.isNaN(parsed.getTime()) || localDateTime(parsed) !== value) {
+      throw new Error('Choose a valid local pickup date and time.');
+    }
+    if (parsed.getTime() <= Date.now() + 15 * 60000 || parsed.getTime() > Date.now() + 7 * 86400000) {
+      throw new Error('Choose a pickup more than 15 minutes and no more than 7 days from now.');
+    }
+    return parsed.toISOString();
+  }
   if (bookingTypeSelect && scheduleRow) {
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    $('#schedule-timezone').textContent = `Times use your device timezone (${zone}). Book more than 15 minutes and up to 7 days ahead. Driver availability is not guaranteed.`;
     bookingTypeSelect.addEventListener('change', () => {
       const isSchedule = bookingTypeSelect.value === 'SCHEDULE';
       scheduleRow.hidden = !isSchedule;
+      scheduleInput.required = isSchedule;
+      scheduleInput.disabled = !isSchedule;
+      if (isSchedule) setScheduleBounds(scheduleInput);
       if (isSchedule && scheduleInput && !scheduleInput.value) {
-        const minDate = new Date(Date.now() + 25 * 60000);
-        minDate.setMinutes(minDate.getMinutes() - minDate.getTimezoneOffset());
-        scheduleInput.min = minDate.toISOString().slice(0, 16);
-        scheduleInput.value = minDate.toISOString().slice(0, 16);
+        scheduleInput.value = localDateTime(Date.now() + 30 * 60000);
       }
     });
   }
@@ -522,7 +846,7 @@
   onForm('#quote-form', async data => {
     invalidateQuote();
     const version = state.quoteVersion;
-    const payload = {...data};
+    const payload = {...data, stops:bookingStops};
     if (!payload.pickup_latitude) { delete payload.pickup_latitude; delete payload.pickup_longitude; }
     if (!payload.destination_latitude) { delete payload.destination_latitude; delete payload.destination_longitude; }
     const quote = await api('rides/quotes/', {method:'POST', data:payload});
@@ -547,7 +871,7 @@
         </div>
         ${quote.surge_multiplier && Number(quote.surge_multiplier) > 1 ? `<div class="pill warning" style="margin:6px 0;display:inline-block;">⚡ Surge pricing active (×${quote.surge_multiplier})</div>` : ''}
         <p class="form-hint">Distance and time are estimates. This trip is reserved exclusively for you. Fare quote valid for 10 minutes.</p>
-        <div class="promo-box" style="margin:12px 0;padding:10px;background:var(--bg-subtle,#f4f6f8);border-radius:6px;">
+        <div class="promo-box" ${isSchedule ? 'hidden' : ''} style="margin:12px 0;padding:10px;background:var(--bg-subtle,#f4f6f8);border-radius:6px;">
           <label style="margin:0 0 4px 0;font-size:12px;font-weight:600;">Promo code</label>
           <div style="display:flex;gap:6px;">
             <input type="text" id="promo-code-input" placeholder="e.g. DISCOUNT10" maxlength="20" style="text-transform:uppercase;flex:1;">
@@ -601,20 +925,21 @@
       const currentIsSchedule = $('#booking-type-select')?.value === 'SCHEDULE';
       const paymentMethod = $('#payment-method').value;
       if (currentIsSchedule) {
-        const schedVal = $('#schedule-datetime')?.value;
-        if (!schedVal) throw new Error('Please select a scheduled pickup date and time.');
-        const schedDate = new Date(schedVal);
-        if (isNaN(schedDate.getTime())) throw new Error('Invalid scheduled pickup date/time.');
+        const scheduledFor = validateScheduleInput(scheduleInput);
         await api('rides/schedule/', {
           method: 'POST',
           data: {
             quote_id: state.quote.id,
             payment_method: paymentMethod,
-            scheduled_for: schedDate.toISOString()
+            scheduled_for: scheduledFor
           }
         });
         state.quote = null;
         $('#quote-result').hidden = true;
+        $('#history-filters').reset();
+        historyFilters = new URLSearchParams();
+        state.page = 1;
+        scheduledPage = 1;
         toast('Ride scheduled successfully! View it in My trips.');
         await changeTab('history');
       } else {
@@ -642,11 +967,13 @@
     toast('Security question and answer saved.');
   });
   onForm('#save-place-form', async (data, form) => {
-    await api('rides/saved-places/', {method:'POST', data});
-    form.reset();
-    toast('Saved place added.');
-    await loadSavedPlaces();
+    const editId = editingPlaceId;
+    await api(editId ? `rides/saved-places/${editId}/` : 'rides/saved-places/', {method:editId ? 'PATCH' : 'POST', data});
+    resetPlaceEditor();
+    toast(editId ? 'Saved place updated.' : 'Saved place added.');
+    await loadSavedPlaces(1);
   });
+  $('#cancel-place-edit')?.addEventListener('click', resetPlaceEditor);
   ['#emergency-contact-form', '#driver-emergency-contact-form'].forEach(selector => onForm(selector, async (data, form) => {
     await api('auth/emergency-contacts/', {method:'POST', data});
     form.reset();
@@ -666,7 +993,20 @@
     if (!state.online) stopSharingLocation();
     await sync();
   }));
-  $('#history-filter').addEventListener('change', () => { state.page=1; loadHistory().catch(error => toast(error.message,true)); });
+  onForm('#history-filters', async (_data, form) => {
+    historyFilters = reportParams(form); await loadHistory(1);
+  });
+  $('#history-filter').addEventListener('change', () => $('#history-filters').requestSubmit());
+  $('#history-filters').addEventListener('reset', () => {
+    historyFilters = new URLSearchParams(); loadHistory(1).catch(error => toast(error.message, true));
+  });
+  $('#history-export').addEventListener('click', event => busy(event.currentTarget, exportHistory));
+  onForm('#earnings-filters', async (_data, form) => {
+    earningsFilters = reportParams(form); await loadEarnings();
+  });
+  $('#earnings-filters').addEventListener('reset', () => {
+    earningsFilters = new URLSearchParams(); loadEarnings().catch(error => toast(error.message, true));
+  });
   $('#history-prev').addEventListener('click', event => busy(event.currentTarget, () => loadHistory(Math.max(1,state.page-1))));
   $('#history-next').addEventListener('click', event => busy(event.currentTarget, () => loadHistory(state.page+1)));
   $('#notifications-prev').addEventListener('click', event => busy(event.currentTarget, () => loadNotifications(Math.max(1,state.notificationPage-1))));
@@ -684,10 +1024,14 @@
       const dropdown = $(`#${kind}-places`);
       if (!input || !dropdown) return;
 
-      let timer;
+      let timer, controller, searchVersion = 0;
       async function search(q = '') {
+        controller?.abort();
+        controller = new AbortController();
+        const version = ++searchVersion;
         try {
-          const places = await api(`rides/places/search/?q=${encodeURIComponent(q)}`);
+          const places = await api(`rides/places/search/?q=${encodeURIComponent(q)}`, {signal:controller.signal});
+          if (version !== searchVersion || document.activeElement !== input || input.value.trim() !== q) return;
           if (!places || !places.length) {
             dropdown.innerHTML = '<div class="place-item" style="cursor:default;"><span class="place-name">No locations found</span><span class="place-address">Try another landmark or area name</span></div>';
             dropdown.hidden = false;
@@ -713,16 +1057,19 @@
               }
             });
           });
-        } catch (_) {
-          dropdown.hidden = true;
+        } catch (error) {
+          if (error.name !== 'AbortError' && version === searchVersion) dropdown.hidden = true;
         }
       }
 
       input.addEventListener('focus', () => search(input.value.trim()));
       input.addEventListener('input', () => {
         clearTimeout(timer);
-        timer = setTimeout(() => search(input.value.trim()), 200);
+        controller?.abort();
+        ++searchVersion;
+        timer = setTimeout(() => search(input.value.trim()), 300);
       });
+      input.addEventListener('blur', () => { clearTimeout(timer); controller?.abort(); });
     });
 
     document.addEventListener('click', event => {

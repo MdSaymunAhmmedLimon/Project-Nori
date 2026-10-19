@@ -16,6 +16,8 @@ from .models import (
     SavedPlace, ScheduledRide, SOSAlert, TripShareToken, UserBadge,
 )
 
+_UNSET = object()
+
 
 class CoordinatesSerializer(WritableFieldsOnlyMixin, serializers.Serializer):
     latitude = serializers.DecimalField(max_digits=9, decimal_places=6, min_value=-90, max_value=90)
@@ -151,23 +153,30 @@ class RideSerializer(serializers.ModelSerializer):
         return None
 
 
-    def person(self, user, *, contact=False):
+    def person(self, user, *, contact=False, average_rating=_UNSET):
         if not user:
             return None
+        if average_rating is _UNSET:
+            average_rating = user.received_ratings.aggregate(value=Avg("score"))["value"]
         data = {"id": user.pk, "name": user.get_full_name() or user.username,
-                "rating": user.received_ratings.aggregate(value=Avg("score"))["value"]}
+                "rating": average_rating}
         if contact:
             data["phone_number"] = user.phone_number
         return data
 
     def get_rider(self, ride):
-        return self.person(ride.rider, contact=ride.status in ASSIGNED_STATUSES)
+        return self.person(ride.rider, contact=ride.status in ASSIGNED_STATUSES,
+                           average_rating=getattr(ride, "rider_average_rating", _UNSET))
 
     def get_driver(self, ride):
-        data = self.person(ride.driver, contact=ride.status in ASSIGNED_STATUSES)
+        data = self.person(ride.driver, contact=ride.status in ASSIGNED_STATUSES,
+                           average_rating=getattr(ride, "driver_average_rating", _UNSET))
         if data is None:
             return None
-        profile = DriverProfile.objects.filter(user=ride.driver).select_related("vehicle").first()
+        if hasattr(ride, "driver_average_rating"):
+            profile = getattr(ride.driver, "driver_profile", None)
+        else:
+            profile = DriverProfile.objects.filter(user=ride.driver).select_related("vehicle").first()
         if profile:
             if hasattr(profile, "vehicle"):
                 vehicle = profile.vehicle
@@ -201,6 +210,10 @@ class OfferSerializer(serializers.ModelSerializer):
 class ScheduleRideInputSerializer(WritableFieldsOnlyMixin, serializers.Serializer):
     quote_id = serializers.UUIDField()
     payment_method = serializers.ChoiceField(choices=Ride.PaymentMethod.choices, default="CASH")
+    scheduled_for = serializers.DateTimeField()
+
+
+class RescheduleRideInputSerializer(WritableFieldsOnlyMixin, serializers.Serializer):
     scheduled_for = serializers.DateTimeField()
 
 
@@ -305,30 +318,32 @@ class FavouriteDriverSerializer(serializers.ModelSerializer):
     driver_id = serializers.IntegerField(source="driver.id", read_only=True)
     driver_name = serializers.SerializerMethodField()
     driver_rating = serializers.SerializerMethodField()
-    driver_phone = serializers.CharField(source="driver.phone_number", read_only=True)
 
     class Meta:
         model = FavouriteDriver
-        fields = ("id", "driver", "driver_id", "driver_name", "driver_rating", "driver_phone", "created_at")
-        read_only_fields = ("id", "created_at")
+        fields = ("id", "driver_id", "driver_name", "driver_rating", "created_at")
+        read_only_fields = fields
 
     def get_driver_name(self, obj):
         return obj.driver.get_full_name() or obj.driver.username
 
     def get_driver_rating(self, obj):
+        if hasattr(obj, "average_rating"):
+            return obj.average_rating
         return obj.driver.received_ratings.aggregate(value=Avg("score"))["value"]
 
 
 class LostItemSerializer(serializers.ModelSerializer):
-    reporter_name = serializers.CharField(source="reporter.username", read_only=True)
+    pickup_label = serializers.CharField(source="ride.quote.pickup_label", read_only=True)
+    destination_label = serializers.CharField(source="ride.quote.destination_label", read_only=True)
 
     class Meta:
         model = LostItem
         fields = (
-            "id", "ride", "reporter", "reporter_name", "description",
-            "status", "admin_note", "created_at", "resolved_at",
+            "id", "ride", "pickup_label", "destination_label", "description",
+            "status", "created_at", "resolved_at",
         )
-        read_only_fields = ("id", "ride", "reporter", "reporter_name", "created_at")
+        read_only_fields = fields
 
 
 class LostItemInputSerializer(WritableFieldsOnlyMixin, serializers.Serializer):

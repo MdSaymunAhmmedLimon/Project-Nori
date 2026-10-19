@@ -20,6 +20,7 @@
       <div class="ride-layout"><div class="ride-controls">
       {% if user.role == 'RIDER' %}
         <article class="panel" id="booking-panel"><div class="panel-heading"><h2>Plan your ride</h2><span class="pill success">Private · 1 Rider</span></div><p class="muted">Choose your pickup and destination to get an upfront fare.</p>
+        <details class="booking-saved-places"><summary>Choose a saved place</summary><div id="booking-saved-places-list" aria-live="polite"></div></details>
         <form id="quote-form">
           <input type="hidden" name="pickup_latitude" id="pickup-latitude">
           <input type="hidden" name="pickup_longitude" id="pickup-longitude">
@@ -39,6 +40,8 @@
             <button type="button" class="map-picker" data-pick="destination" aria-label="Select destination on map" title="Choose on map">⌖</button>
             <div id="destination-places" class="places-dropdown" hidden></div>
           </div>
+          <div class="booking-route-actions"><button type="button" id="swap-route" class="button secondary small">Swap pickup and destination</button></div>
+          <div id="booking-stops" class="booking-stops" hidden><p id="booking-stops-summary"></p><button type="button" id="clear-booking-stops" class="plain-link">Remove stops</button></div>
           <div class="quick-places-container">
             <label class="form-hint" style="display:block;margin-bottom:6px;">Popular destinations:</label>
             <div class="quick-places">
@@ -68,8 +71,9 @@
           </div>
           <div id="schedule-picker-row" style="margin-bottom:12px;" hidden>
             <label>Pickup date & time
-              <input type="datetime-local" id="schedule-datetime">
+              <input type="datetime-local" id="schedule-datetime" aria-describedby="schedule-timezone" disabled>
             </label>
+            <p class="form-hint" id="schedule-timezone"></p>
           </div>
           <button type="button" id="use-pickup-location" class="plain-link location-link">⌖ Use my current location</button>
           <button class="button full" type="submit">See my fare <span>→</span></button>
@@ -83,14 +87,50 @@
       <article class="panel" id="trip-panel" hidden><div id="trip-content"></div><button id="return-active-trip" class="button full" hidden>Return to current trip →</button></article>
       </div><div class="map-panel"><div class="map-caption"><span class="status-dot"></span><span id="map-instruction">{% if user.role == 'RIDER' %}Click the map to choose your pickup{% else %}Your city, at a glance{% endif %}</span></div><div id="ride-map" aria-label="Interactive ride map"></div><div class="map-footnote">Map lines connect selected points. They are not turn-by-turn directions.</div></div></div>
     </section>
-    <section id="tab-history" class="tab-panel" hidden><div class="page-heading"><div class="eyebrow">THE PLACES YOU'VE BEEN</div><h1>Your journeys.</h1></div><div class="panel"><div class="panel-heading"><h2>Trip history</h2><label class="filter-label">Status<select id="history-filter"><option value="">All trips</option><option value="COMPLETED">Completed</option><option value="CANCELLED">Cancelled</option></select></label></div><div id="history-list"></div><div class="pagination"><button id="history-prev" class="button secondary small">← Previous</button><span id="history-page"></span><button id="history-next" class="button secondary small">Next →</button></div></div></section>
-    <section id="tab-earnings" class="tab-panel" hidden><div class="page-heading"><div class="eyebrow">EVERY JOURNEY ADDS UP</div><h1>Your earnings.</h1></div><div id="earnings-content"></div></section>
+    <section id="tab-history" class="tab-panel" hidden>
+      <div class="page-heading"><div class="eyebrow">THE PLACES YOU'VE BEEN</div><h1>Your journeys.</h1></div>
+      <div class="panel">
+        <div class="panel-heading"><h2>Trip history</h2><button type="button" id="history-export" class="button secondary small">Download CSV</button></div>
+        <form id="history-filters" class="report-filters">
+          <label>Search route<input type="search" name="q" maxlength="200" placeholder="Pickup or destination"></label>
+          <label>Status<select id="history-filter" name="status"><option value="">All trips</option><option value="COMPLETED">Completed</option><option value="CANCELLED">Cancelled</option><option value="REQUESTED">Requested</option><option value="SEARCHING">Searching</option><option value="ACCEPTED">Driver assigned</option><option value="DRIVER_ARRIVING">Driver on the way</option><option value="DRIVER_ARRIVED">Driver arrived</option><option value="IN_PROGRESS">In progress</option></select></label>
+          <label>From date<input type="date" name="date_from"></label>
+          <label>Through date<input type="date" name="date_to"></label>
+          <label>Payment<select name="payment_method"><option value="">All methods</option><option value="CASH">Cash</option><option value="CARD">Card</option></select></label>
+          <div class="report-actions"><button class="button small" type="submit">Apply filters</button><button class="button secondary small" type="reset">Reset</button></div>
+        </form>
+        <p class="form-hint">Dates use UTC and the time you requested the trip. Downloads include all matching trips, up to 5,000 or 4 MB. Upcoming scheduled rides appear when filters are reset.</p>
+        <div id="history-list" aria-live="polite"></div>
+        <div class="pagination"><button id="history-prev" class="button secondary small">← Previous</button><span id="history-page"></span><button id="history-next" class="button secondary small">Next →</button></div>
+      </div>
+    </section>
+    <section id="tab-earnings" class="tab-panel" hidden>
+      <div class="page-heading"><div class="eyebrow">EVERY JOURNEY ADDS UP</div><h1>Your earnings.</h1></div>
+      <div class="panel">
+        <form id="earnings-filters" class="report-filters">
+          <label>From date<input type="date" name="date_from"></label><label>Through date<input type="date" name="date_to"></label>
+          <div class="report-actions"><button class="button small" type="submit">Apply dates</button><button class="button secondary small" type="reset">All time</button></div>
+        </form>
+        <p class="form-hint">Dates use UTC and trip completion time. Fare earnings exclude tips. Each currency is shown separately.</p>
+      </div>
+      <div id="earnings-content" aria-live="polite"></div>
+    </section>
     <section id="tab-account" class="tab-panel" hidden><div class="page-heading"><div class="eyebrow">A LITTLE ABOUT YOU</div><h1>Your profile.</h1></div><div class="account-grid"><article class="panel"><h2>Personal information</h2><p id="account-identity" class="muted"></p><form id="account-form"><div class="form-grid"><label>First name<input name="first_name" maxlength="150"></label><label>Last name<input name="last_name" maxlength="150"></label></div><label>Phone number<input name="phone_number" placeholder="+8801712345678" maxlength="16" type="tel"></label><p class="form-hint">Include your country code. Your trip partner can see this during an active ride.</p><button class="button" type="submit">Save changes</button></form></article>
     <article class="panel"><h2>Security question (Password recovery)</h2><p class="muted">Recover your account without an email using your private security question.</p><form id="security-question-form"><label>Security question<select name="security_question" id="account-security-question"><option value="">-- Choose question --</option><option value="What was the name of your first pet?">What was the name of your first pet?</option><option value="In what city were you born?">In what city were you born?</option><option value="What was the make of your first car?">What was the make of your first car?</option><option value="What was your childhood nickname?">What was your childhood nickname?</option><option value="What is your mother's maiden name?">What is your mother's maiden name?</option></select></label><label>Answer<input name="security_answer" id="account-security-answer" placeholder="Enter new answer (case-insensitive)" maxlength="255"></label><button class="button" type="submit">Update security question</button></form><hr style="border:0;border-top:1px solid var(--line);margin:20px 0;"><a class="button secondary small" href="{% url 'webapp:password_change' %}">Change password</a></article>
     <article class="panel"><h2>Refer & earn credits</h2><p class="muted">Share your referral code with friends. You both earn trip credits when they take their first ride.</p><div class="fare-box" style="margin-top:10px;padding-top:10px;"><div class="eyebrow">YOUR REFERRAL CODE</div><strong id="referral-code-display" style="font-size:22px;letter-spacing:2px;display:block;margin-bottom:8px;">Loading…</strong><p id="referral-stats-display" class="muted">Earned credits: BDT 0.00 · 0 friends referred</p></div><div id="referral-leaderboard-section"></div></article>
-    {% if user.role == 'RIDER' %}<article class="panel"><h2>Saved places</h2><p class="muted">Save places you travel to often.</p><div id="saved-places-list" style="margin-bottom:12px;"></div><form id="save-place-form"><div class="form-grid"><label>Place label<input name="label" placeholder="Home, Work, etc." maxlength="50" required></label><label>Address<input name="address" placeholder="e.g. Banani 11" maxlength="200" required></label></div><div class="form-grid"><label>Latitude<input name="latitude" type="number" step="0.000001" placeholder="23.7937" required></label><label>Longitude<input name="longitude" type="number" step="0.000001" placeholder="90.4043" required></label></div><button class="button secondary small" type="submit">Save place</button></form></article>
+    {% if user.role == 'RIDER' %}<article class="panel" id="saved-places-panel">
+      <h2>Saved places</h2><p class="muted">Keep your frequent pickup and destination addresses ready.</p>
+      <div id="saved-places-list" aria-live="polite"></div>
+      <form id="save-place-form">
+        <h3 id="save-place-heading">Add a place</h3>
+        <div class="form-grid"><label>Place label<input name="label" placeholder="Home, Work, etc." maxlength="50" required></label><label>Address<input name="address" placeholder="e.g. Banani 11" maxlength="200" required></label></div>
+        <div class="form-grid"><label>Latitude<input name="latitude" type="number" step="0.000001" min="-90" max="90" placeholder="23.7937" required></label><label>Longitude<input name="longitude" type="number" step="0.000001" min="-180" max="180" placeholder="90.4043" required></label></div>
+        <div class="button-row"><button class="button secondary small" type="submit">Save place</button><button id="cancel-place-edit" class="plain-link" type="button" hidden>Cancel editing</button></div>
+      </form>
+    </article>
     <article class="panel" id="emergency-contacts-panel"><h2>Emergency contacts</h2><p class="muted">Add trusted contacts to notify in case of emergency (max 5).</p><div id="emergency-contacts-list" style="margin-bottom:12px;"></div><form id="emergency-contact-form"><div class="form-grid"><label>Contact name<input name="name" maxlength="100" placeholder="Family member or friend" required></label><label>Phone number<input name="phone_number" maxlength="20" placeholder="+8801712345678" type="tel" required></label></div><label>Relationship<input name="relationship" maxlength="50" placeholder="e.g. Parent, Spouse, Sibling" required></label><button class="button secondary small" type="submit">Add contact</button></form></article>
-    <article class="panel" id="favourite-drivers-panel"><h2>Favourite drivers</h2><p class="muted">Drivers you have saved after great journeys.</p><div id="favourite-drivers-list"></div></article>
+    <article class="panel" id="favourite-drivers-panel"><h2>Favourite drivers</h2><p class="muted">Keep a list of drivers from your completed trips. Saving a favourite does not reserve that driver for future rides.</p><div id="favourite-drivers-list" aria-live="polite"></div></article>
+    <article class="panel" id="lost-items-panel"><h2>Lost-item reports</h2><p class="muted">Report an item from a completed trip, then follow its progress here.</p><div id="lost-items-list" aria-live="polite"></div></article>
     <article class="panel" id="price-locks-panel"><h2>Price locks</h2><p class="muted">Lock in guaranteed rates for your frequent routes.</p><div id="price-locks-list"></div></article>
     <article class="panel" id="carbon-footprint-panel"><h2>Carbon footprint</h2><p class="muted">Track your environmental impact and green travel savings.</p><div id="carbon-footprint-content"></div></article>
     <article class="panel" id="loyalty-badges-panel"><h2>Loyalty & badges</h2><p class="muted">Earn points with every trip and unlock achievements.</p><div id="loyalty-badges-content"></div></article>{% endif %}

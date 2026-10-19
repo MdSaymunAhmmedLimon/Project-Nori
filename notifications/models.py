@@ -11,3 +11,7 @@ class Notification(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["user", "-created_at", "-id"], name="notification_user_feed_idx"),
+            models.Index(fields=["user"], condition=models.Q(read_at__isnull=True), name="notification_unread_idx"),
+        ]

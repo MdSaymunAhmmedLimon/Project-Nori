@@ -1,17 +1,49 @@
 import uuid
+from datetime import timedelta
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
 from django.contrib.auth import get_user_model
 from django.db import connections
 from django.test import TransactionTestCase, skipUnlessDBFeature
+from django.utils import timezone
+from rest_framework.exceptions import NotFound
 
-from rides.models import Ride, RideOffer
-from rides.services import Conflict, accept_offer, create_quote, request_ride
+from rides.models import Ride, RideOffer, ScheduledRide
+from rides.services import Conflict, accept_offer, cancel_scheduled_ride, create_quote, dispatch_scheduled_ride, request_ride
 from rides.tests.test_workflow import make_driver
 
 
 class PostgreSQLConcurrencyTests(TransactionTestCase):
+    def due_reservation(self):
+        quote = create_quote(self.rider, self.route)
+        return ScheduledRide.objects.create(
+            rider=self.rider, quote=quote, scheduled_for=timezone.now() - timedelta(minutes=1),
+        )
+
+    @skipUnlessDBFeature("has_select_for_update")
+    def test_simultaneous_scheduled_dispatch_creates_one_ride(self):
+        reservation = self.due_reservation()
+        self.run_race([lambda: dispatch_scheduled_ride(reservation.pk)] * 2)
+        reservation.refresh_from_db()
+        self.assertIsNotNone(reservation.ride_id)
+        self.assertEqual(Ride.objects.count(), 1)
+
+    @skipUnlessDBFeature("has_select_for_update")
+    def test_cancel_cannot_race_with_scheduled_dispatch(self):
+        reservation = self.due_reservation()
+
+        def cancel():
+            try:
+                cancel_scheduled_ride(self.rider, reservation.pk)
+            except NotFound:
+                pass  # Dispatch won; the active ride must be cancelled separately.
+
+        self.run_race([cancel, lambda: dispatch_scheduled_ride(reservation.pk)])
+        reservation.refresh_from_db()
+        self.assertNotEqual(bool(reservation.cancelled_at), bool(reservation.ride_id))
+        self.assertEqual(Ride.objects.count(), int(bool(reservation.ride_id)))
+
     def setUp(self):
         self.rider = get_user_model().objects.create_user(username="rider", email="rider@example.com")
         self.driver = make_driver("first_driver")

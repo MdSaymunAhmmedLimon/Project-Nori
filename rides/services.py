@@ -128,7 +128,7 @@ def expire_searches(user=None):
 
 
 @transaction.atomic
-def request_ride(user, *, quote_id, request_id, payment_method, promo_code="", ride_preferences=None):
+def request_ride(user, *, quote_id, request_id, payment_method, promo_code="", ride_preferences=None, _scheduled_id=None):
     require_role(user, "RIDER")
     get_user_model().objects.select_for_update().get(pk=user.pk)
     existing = Ride.objects.filter(rider=user, request_id=request_id).first()
@@ -144,7 +144,17 @@ def request_ride(user, *, quote_id, request_id, payment_method, promo_code="", r
     quote = RideQuote.objects.select_for_update().filter(pk=quote_id, rider=user).first()
     if not quote:
         raise NotFound("Fare quote not found.")
-    if quote.expires_at <= timezone.now():
+    reservation = ScheduledRide.objects.filter(
+        quote=quote, rider=user, cancelled_at__isnull=True, ride__isnull=True,
+    ).first()
+    if reservation and reservation.pk != _scheduled_id:
+        raise Conflict("This quote is reserved for a scheduled ride.")
+    if _scheduled_id and (
+        not reservation or reservation.pk != _scheduled_id
+        or reservation.scheduled_for > timezone.now()
+    ):
+        raise Conflict("This scheduled ride is not ready for dispatch.")
+    if not _scheduled_id and quote.expires_at <= timezone.now():
         raise ValidationError({"quote_id": "This quote has expired. Get a new estimate."})
     if Ride.objects.filter(quote=quote).exists():
         raise Conflict("This quote has already been used. Get a new estimate.")
@@ -201,18 +211,19 @@ def dispatch_ride(ride_id):
         location_updated_at__gte=timezone.now() - timedelta(seconds=settings.LOCATION_MAX_AGE_SECONDS),
         latitude__isnull=False, longitude__isnull=False,
         vehicle__vehicle_class=vclass,
-    ).exclude(user_id__in=busy).select_related("user", "vehicle")
+    ).exclude(user_id__in=busy)
 
     nearby = []
     existing_offers = ride.offers.all()
     available_slots = max(0, 5 - existing_offers.filter(rejected_at__isnull=True, expires_at__gt=timezone.now()).count())
+    if not available_slots:
+        return
     offered_ids = set(existing_offers.values_list("driver_id", flat=True))
-    for profile in profiles[:500]:
-        if profile.user_id in offered_ids:
-            continue
-        distance = distance_km(ride.quote.pickup_latitude, ride.quote.pickup_longitude, profile.latitude, profile.longitude)
+    candidates = profiles.exclude(user_id__in=offered_ids).values_list("user_id", "latitude", "longitude")[:500]
+    for driver_id, latitude, longitude in candidates:
+        distance = distance_km(ride.quote.pickup_latitude, ride.quote.pickup_longitude, latitude, longitude)
         if distance <= settings.MATCH_RADIUS_KM:
-            nearby.append((distance, profile.user_id))
+            nearby.append((distance, driver_id))
     for distance, driver_id in sorted(nearby)[:available_slots]:
         offer, created = RideOffer.objects.get_or_create(
             ride=ride, driver_id=driver_id,
@@ -223,6 +234,7 @@ def dispatch_ride(ride_id):
 
 
 def dispatch_waiting():
+    dispatch_due_scheduled_rides(limit=5)
     expire_searches()
     for ride_id in Ride.objects.filter(status=Ride.Status.SEARCHING).order_by("created_at").values_list("pk", flat=True)[:50]:
         dispatch_ride(ride_id)
@@ -449,34 +461,108 @@ def get_active_surge_multiplier():
     return rule.multiplier if rule else Decimal('1')
 
 
-def schedule_ride(user, *, quote_id, payment_method, scheduled_for):
-    """Create a ScheduledRide for future dispatch."""
-    require_role(user, "RIDER")
+def validate_scheduled_time(scheduled_for):
     now = timezone.now()
     if scheduled_for <= now + timedelta(minutes=15):
-        raise ValidationError({"scheduled_for": "Must be at least 15 minutes in the future."})
+        raise ValidationError({"scheduled_for": "Must be more than 15 minutes in the future."})
     if scheduled_for > now + timedelta(days=7):
         raise ValidationError({"scheduled_for": "Cannot schedule more than 7 days ahead."})
+
+
+@transaction.atomic
+def schedule_ride(user, *, quote_id, payment_method, scheduled_for):
+    """Reserve a fresh quote; its agreed fare survives expiry at dispatch."""
+    require_role(user, "RIDER")
+    get_user_model().objects.select_for_update().get(pk=user.pk)
+    validate_scheduled_time(scheduled_for)
     if payment_method == "CARD" and not settings.CARD_PAYMENTS_ENABLED:
         raise ValidationError({"payment_method": "Card payments are not configured. Choose cash."})
-    quote = RideQuote.objects.filter(pk=quote_id, rider=user).first()
+    quote = RideQuote.objects.select_for_update().filter(pk=quote_id, rider=user).first()
     if not quote:
         raise NotFound("Fare quote not found.")
     if Ride.objects.filter(quote=quote).exists():
         raise Conflict("This quote has already been used. Get a new estimate.")
+    existing = ScheduledRide.objects.filter(quote=quote, cancelled_at__isnull=True, ride__isnull=True).first()
+    if existing:
+        if existing.scheduled_for == scheduled_for and existing.payment_method == payment_method:
+            return existing
+        raise Conflict("This quote already has a reservation. Edit it in My trips.")
+    if quote.expires_at <= timezone.now():
+        raise ValidationError({"quote_id": "This quote has expired. Get a new estimate."})
     return ScheduledRide.objects.create(
         rider=user, quote=quote, payment_method=payment_method, scheduled_for=scheduled_for
     )
 
 
+@transaction.atomic
 def cancel_scheduled_ride(user, scheduled_id):
     """Cancel a scheduled ride that has not yet been dispatched."""
-    sr = ScheduledRide.objects.filter(pk=scheduled_id, rider=user, cancelled_at__isnull=True, ride__isnull=True).first()
+    get_user_model().objects.select_for_update().get(pk=user.pk)
+    sr = ScheduledRide.objects.select_for_update().filter(pk=scheduled_id, rider=user, cancelled_at__isnull=True, ride__isnull=True).first()
     if not sr:
         raise NotFound("Scheduled ride not found or already started/cancelled.")
     sr.cancelled_at = timezone.now()
     sr.save(update_fields=["cancelled_at"])
     return sr
+
+
+@transaction.atomic
+def reschedule_ride(user, scheduled_id, *, scheduled_for):
+    require_role(user, "RIDER")
+    get_user_model().objects.select_for_update().get(pk=user.pk)
+    sr = ScheduledRide.objects.select_for_update().filter(pk=scheduled_id, rider=user).first()
+    if not sr:
+        raise NotFound("Scheduled ride not found.")
+    if sr.cancelled_at or sr.ride_id or sr.scheduled_for <= timezone.now():
+        raise Conflict("Only upcoming, undispatched reservations can be rescheduled.")
+    validate_scheduled_time(scheduled_for)
+    sr.scheduled_for = scheduled_for
+    sr.save(update_fields=["scheduled_for"])
+    return sr
+
+
+@transaction.atomic
+def dispatch_scheduled_ride(scheduled_id):
+    # All booking paths lock the rider first, then the reservation/quote.
+    owner_id = ScheduledRide.objects.filter(pk=scheduled_id).values_list("rider_id", flat=True).first()
+    if owner_id is None:
+        return None
+    user = get_user_model().objects.select_for_update().get(pk=owner_id)
+    sr = ScheduledRide.objects.select_for_update().filter(pk=scheduled_id).first()
+    if not sr or sr.cancelled_at or sr.ride_id or sr.scheduled_for > timezone.now():
+        return None
+    # Never unexpectedly launch an old reservation when a browser reconnects.
+    if sr.scheduled_for < timezone.now() - timedelta(minutes=15):
+        sr.cancelled_at = timezone.now()
+        sr.save(update_fields=["cancelled_at"])
+        notify(user.pk, "Your scheduled ride missed its pickup window and was cancelled. Please book again.")
+        return None
+    ride, _ = request_ride(
+        user, quote_id=sr.quote_id, request_id=sr.pk,
+        payment_method=sr.payment_method, _scheduled_id=sr.pk,
+    )
+    sr.ride = ride
+    sr.save(update_fields=["ride"])
+    return ride
+
+
+def dispatch_due_scheduled_rides(*, user=None, limit=5):
+    due = ScheduledRide.objects.filter(
+        scheduled_for__lte=timezone.now(), ride__isnull=True, cancelled_at__isnull=True,
+    )
+    if user is not None:
+        due = due.filter(rider=user)
+    ids = list(due.order_by("scheduled_for", "pk").values_list("pk", flat=True)[:limit])
+    dispatched = 0
+    for scheduled_id in ids:
+        try:
+            if dispatch_scheduled_ride(scheduled_id):
+                dispatched += 1
+        except (Conflict, ValidationError, PermissionDenied):
+            # Busy riders and temporarily unavailable payments can retry until
+            # the pickup window closes. Infrastructure failures still propagate.
+            continue
+    return dispatched
 
 
 @transaction.atomic
@@ -634,6 +720,8 @@ def send_ride_message(user, ride_id, content):
 def create_saved_place(user, *, label, address, latitude, longitude):
     """Save a favourite place for quick destination selection."""
     require_role(user, "RIDER")
+    # Serialize label checks across creates and edits for this owner.
+    get_user_model().objects.select_for_update().get(pk=user.pk)
     label = label.strip()
     if SavedPlace.objects.filter(user=user, label__iexact=label).exists():
         raise Conflict(f"A saved place with label '{label}' already exists.")
@@ -641,6 +729,25 @@ def create_saved_place(user, *, label, address, latitude, longitude):
         user=user, label=label, address=address.strip(),
         latitude=latitude, longitude=longitude,
     )
+
+
+@transaction.atomic
+def update_saved_place(user, place_id, changes):
+    require_role(user, "RIDER")
+    get_user_model().objects.select_for_update().get(pk=user.pk)
+    place = SavedPlace.objects.select_for_update().filter(pk=place_id, user=user).first()
+    if not place:
+        raise NotFound("Saved place not found.")
+    if "label" in changes:
+        label = changes["label"].strip()
+        if SavedPlace.objects.filter(user=user, label__iexact=label).exclude(pk=place.pk).exists():
+            raise Conflict(f"A saved place with label '{label}' already exists.")
+    for field in ("label", "address", "latitude", "longitude"):
+        if field in changes:
+            value = changes[field]
+            setattr(place, field, value.strip() if isinstance(value, str) else value)
+    place.save(update_fields=list(changes))
+    return place
 
 
 @transaction.atomic

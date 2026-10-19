@@ -100,7 +100,7 @@ def shared_trip(request, token):
 
 @user_passes_test(lambda user: user.is_active and user.is_staff)
 def operations(request):
-    from rides.models import SOSAlert, SurgePricingRule, Ride, ACTIVE_STATUSES
+    from rides.models import LostItem, SOSAlert, SurgePricingRule, Ride, ACTIVE_STATUSES
     from drivers.models import DriverProfile, DriverDocument
     from payments.models import Payment
     from accounts.models import User
@@ -110,10 +110,23 @@ def operations(request):
     import datetime
 
     # Existing metrics
-    users_count = User.objects.count()
-    active_count = Ride.objects.filter(status__in=ACTIVE_STATUSES).count()
-    completed_count = Ride.objects.filter(status="COMPLETED").count()
-    pending_count = DriverProfile.objects.filter(verification_status="PENDING").count()
+    user_counts = User.objects.aggregate(total=Count("id"), drivers=Count("id", filter=Q(role="DRIVER")))
+    ride_counts = Ride.objects.aggregate(
+        total=Count("id"), active=Count("id", filter=Q(status__in=ACTIVE_STATUSES)),
+        completed=Count("id", filter=Q(status="COMPLETED")),
+        cancelled=Count("id", filter=Q(status="CANCELLED")),
+        rider_cancelled=Count("id", filter=Q(status="CANCELLED", cancelled_by__role="RIDER")),
+        driver_cancelled=Count("id", filter=Q(status="CANCELLED", cancelled_by__role="DRIVER")),
+    )
+    driver_counts = DriverProfile.objects.aggregate(
+        pending=Count("id", filter=Q(verification_status="PENDING")),
+        online=Count("id", filter=Q(is_online=True)),
+        approved=Count("id", filter=Q(verification_status="APPROVED")),
+    )
+    users_count = user_counts["total"]
+    active_count = ride_counts["active"]
+    completed_count = ride_counts["completed"]
+    pending_count = driver_counts["pending"]
     recent_rides = Ride.objects.select_related("rider", "driver", "quote")[:20]
     revenue = Payment.objects.filter(status="PAID").values("currency").annotate(gross=Sum("amount"), fees=Sum("platform_fee"))
 
@@ -124,7 +137,7 @@ def operations(request):
     # NEW: Driver verification queue
     pending_drivers = DriverProfile.objects.filter(
         verification_status="PENDING"
-    ).select_related("user").prefetch_related("documents", "vehicle").order_by("created_at")[:20]
+    ).select_related("user", "vehicle").prefetch_related("documents").order_by("created_at")[:20]
 
     # NEW: Revenue analytics (last 30 days daily breakdown)
     thirty_days_ago = timezone.now() - datetime.timedelta(days=30)
@@ -155,12 +168,12 @@ def operations(request):
     revenue_30d_card = sum((d["card"] or 0 for d in daily_revenue), 0)
 
     # NEW: Cancellation analytics
-    total_rides = Ride.objects.count()
+    total_rides = ride_counts["total"]
     cancelled_rides = Ride.objects.filter(status="CANCELLED")
-    cancelled_count = cancelled_rides.count()
+    cancelled_count = ride_counts["cancelled"]
     cancellation_rate = round((cancelled_count / total_rides * 100), 1) if total_rides else 0
-    rider_cancelled = cancelled_rides.filter(cancelled_by__role="RIDER").count()
-    driver_cancelled = cancelled_rides.filter(cancelled_by__role="DRIVER").count()
+    rider_cancelled = ride_counts["rider_cancelled"]
+    driver_cancelled = ride_counts["driver_cancelled"]
     recent_cancellations = cancelled_rides.select_related("rider", "driver", "quote").order_by("-cancelled_at")[:10]
     # Top cancellation reasons
     cancel_reasons = list(
@@ -174,11 +187,12 @@ def operations(request):
     surge_rules = SurgePricingRule.objects.all()[:20]
 
     # NEW: Platform totals
-    total_drivers = User.objects.filter(role="DRIVER").count()
-    online_drivers = DriverProfile.objects.filter(is_online=True).count()
-    approved_drivers = DriverProfile.objects.filter(verification_status="APPROVED").count()
+    total_drivers = user_counts["drivers"]
+    online_drivers = driver_counts["online"]
+    approved_drivers = driver_counts["approved"]
 
     context = {
+        "open_lost_items": LostItem.objects.exclude(status__in=["RETURNED", "NOT_FOUND"]).count(),
         "users_count": users_count,
         "active_count": active_count,
         "completed_count": completed_count,

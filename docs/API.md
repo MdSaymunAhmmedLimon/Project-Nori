@@ -1,8 +1,9 @@
 # Shared REST API
 
 Web pages use Django sessions plus CSRF; Android and other API clients use JWT.
-All endpoints below use JSON and trailing slashes. Protected requests without a
-valid identity return 401; insufficient roles return 403; another user's private
+Endpoints use JSON and trailing slashes, except CSV reports and calendar downloads.
+Protected requests without a valid identity return 401; insufficient roles return
+403; another user's private
 resource returns 404. Invalid input returns 400. A ride action conflicting with
 current state returns 409. Throttled requests return 429.
 
@@ -11,6 +12,33 @@ Pass `?page=2` for subsequent pages. Times are ISO 8601 UTC; monetary values are
 decimal strings with a separate currency. Latitude and longitude accept up to six
 decimal places. Do not send owner IDs, roles, prices, or privilege flags unless
 explicitly listed as writable for that endpoint.
+
+## Reservations
+
+| Method | Path | Body / result |
+| --- | --- | --- |
+| GET | `/api/rides/schedule/` | Own reservations, ordered by pickup time; `?pending=1` excludes cancelled/dispatched entries; `page` paginates |
+| POST | `/api/rides/schedule/` | `quote_id`, `scheduled_for` (ISO 8601 with offset), optional `payment_method` (`CASH` default); 201 reservation |
+| PATCH | `/api/rides/schedule/{uuid}/` | Required `scheduled_for` only; 200 updated reservation |
+| DELETE | `/api/rides/schedule/{uuid}/` | Cancel an undispatched reservation; 200 reservation with `cancelled_at` |
+| GET | `/api/rides/schedule/{uuid}/calendar/` | Authenticated owner's upcoming reservation as a private, uncached `text/calendar` attachment |
+
+Pickup must be more than 15 minutes and no more than seven days from the current
+time. An existing reservation must still be in the future to change its time;
+cancelled/dispatched/due reservations return 409 for edits and calendar downloads.
+Changes preserve route, fare, and payment method. Another user's reservation is
+404. Calendar downloads require manual import and do not sync later changes.
+
+Creation requires a fresh, unused quote. Repeating identical booking details with
+the same reserved quote returns that reservation; changing details on the same
+quote returns 409. Immediate ride requests cannot consume a reserved quote.
+The reservation's fare remains valid at scheduled dispatch even after quote expiry.
+Promotional codes are not supported on scheduled bookings.
+
+`GET /api/rides/current/` processes at most one due reservation belonging to the
+current rider. Eligible driver offer polling and the existing dispatch worker
+also process bounded batches. A reservation more than 15 minutes late is cancelled
+when processed, with an in-app notification. Driver availability is not guaranteed.
 
 ## Accounts
 
@@ -168,6 +196,11 @@ GET `/api/notifications/` lists the user's persisted notifications, newest first
 Use `?page=2` and the `next`/`previous` links to read older updates. In addition to
 the standard pagination fields, `unread_count` counts unread notifications across
 all pages for the authenticated user.
+
+GET `/api/notifications/summary/` returns only `{unread_count}` for the
+authenticated user. The dashboard uses this smaller response while Activity is
+closed; the full paginated feed remains available when Activity is opened.
+
 POST `/api/notifications/read/` marks their unread notifications as read.
 Repeated calls are harmless; other users' notifications are unaffected. A
 `notifications_read` WebSocket event updates the user's other open sessions.
@@ -195,6 +228,50 @@ invalidated sessions cannot receive further events; reconnect with renewed crede
 Connections close with 4401 for authentication failure and 4403 for an untrusted
 browser origin. The included web client polls every eight seconds as a fallback.
 
+## Saved places and booking shortcuts
+
+`PATCH /api/rides/saved-places/<id>/` updates a rider's own saved place. Accepts
+any subset of `label`, `address`, `latitude`, and `longitude`; omitted fields keep
+their values. Labels must be unique for that rider, ignoring case. Conflicting
+labels return HTTP 409, invalid data returns 400, and another user's place returns
+404, including for staff. Create and edit operations serialize per rider to keep
+duplicate-label checks consistent. The existing list remains paginated.
+
+The browser's **Ride again** action copies a completed or cancelled trip's route,
+vehicle class, and intermediate stops into the booking form. It obtains current
+ride state first and blocks rebooking during an active trip. The rider must request
+a fresh quote through `/api/rides/quotes/` and explicitly confirm through
+`/api/rides/`; the old fare, payment, promo, and trip are never reused. Swapping
+pickup and destination reverses intermediate stops and invalidates any displayed
+quote. Saved-place shortcuts select either endpoint using the stored address and
+coordinates; editing a typed address clears its previous coordinates.
+
+## Favourite drivers and lost items
+
+All endpoints below require authentication. Rider actions are limited to their
+own completed trips; staff status alone does not grant access to another rider's
+reports or favourites.
+
+| Method | Path | Behavior |
+| --- | --- | --- |
+| GET | `/api/rides/favourite-drivers/` | Paginated saved drivers, names, and ratings; no phone numbers or email addresses |
+| POST | `/api/rides/<ride_uuid>/favourite-driver/` | Save the trip's driver; 201 for new, 200 if already saved |
+| DELETE | `/api/rides/favourite-drivers/<id>/` | Remove the rider's own favourite; 204 on success |
+| GET | `/api/rides/lost-items/` | Paginated reports belonging to the rider, including status and resolution time |
+| POST | `/api/rides/<ride_uuid>/lost-items/` | Submit `{description}` (1–500 characters) after a completed trip |
+
+Saving a favourite does not change driver matching or reserve a driver. Lost-item
+reports allow one open report per trip: retrying the same description returns the
+existing report (200), while a different description returns 409. New reports
+return 201. Riders receive an in-app notification on creation and status changes.
+
+Staff with the `rides.change_lostitem` permission can manage reports in Django
+admin, linked from Operations. Statuses are `REPORTED`, `CONTACTING`, `FOUND`,
+`RETURNED`, and `NOT_FOUND`. The last two resolve the report; reopening clears its
+resolution time and is blocked if another report for that trip is open. Internal
+staff notes are excluded from rider responses and notifications. Reports cannot
+be created or deleted through admin, preserving the rider's original description.
+
 ## Payments and earnings
 
 | Method | Path | Behavior |
@@ -203,6 +280,27 @@ browser origin. The included web client polls every eight seconds as a fallback.
 | POST | `/api/payments/<ride_uuid>/checkout/` | Rider gets `{url}` for their completed, unpaid card trip |
 | POST | `/api/payments/webhook/stripe/` | Stripe-signed server webhook; no browser/JWT identity |
 | GET | `/api/payments/earnings/` | Driver's totals and today's summary, grouped by currency |
+
+`GET /api/rides/` accepts optional `q` (pickup/destination text, up to 200
+characters), `status`, `payment_method` (`CASH` or `CARD`), `date_from`, and
+`date_to`. Dates use `YYYY-MM-DD`, include both boundaries, and filter trip request
+time in UTC. Results remain paginated and restricted to the requesting user's
+trips. Invalid filters or reversed dates return HTTP 400.
+
+`GET /api/rides/export/` uses the same filters and access rules, returning a UTF-8
+CSV attachment with all matching trips, independent of pagination. Reports over
+5,000 trips or 4 MB return HTTP 400 with a request to narrow the date range. Quoted fare,
+final payment amount, payment status, and cancellation fee have separate columns;
+missing payment amounts are blank. Route labels are escaped for spreadsheet
+formula safety. Responses are marked `no-store`.
+
+`GET /api/payments/earnings/` accepts the same optional date range, based on trip
+completion time in UTC. Existing `totals` and `today` fields remain; `totals` also
+includes `average_net`. The `daily` array contains per-date, per-currency trips,
+gross fares, platform fees, net, paid net, and pending net. It covers at most 31
+calendar days ending on `date_to` (today if omitted), intersected with the selected
+range. `trend_from` and `trend_to` describe this window. Summary totals cover the
+full selected range. Fare earnings exclude tips and keep currencies separate.
 
 Completion creates one immutable fare/payment record. Cash collection and duplicate
 provider callbacks are idempotent. The browser redirect from Stripe never marks a

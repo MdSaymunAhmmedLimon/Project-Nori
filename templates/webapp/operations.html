@@ -48,6 +48,12 @@
   </div>
 
   <!-- Section B: Revenue summary -->
+  {% if perms.rides.view_lostitem or perms.rides.change_lostitem %}
+  <div class="panel">
+    <div class="panel-heading"><div><h2>Lost-item reports</h2><p class="muted">{{ open_lost_items }} open report{{ open_lost_items|pluralize }} awaiting follow-up.</p></div><a class="button secondary" href="{% url 'admin:rides_lostitem_changelist' %}">Manage lost items</a></div>
+    <p class="form-hint">Update report statuses to keep riders informed. Staff notes remain private.</p>
+  </div>
+  {% endif %}
   <div class="panel">
     <div class="panel-heading">
       <div>
