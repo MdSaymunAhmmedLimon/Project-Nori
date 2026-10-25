@@ -73,13 +73,13 @@ def get_driver_balance(user):
     from payments.models import Payment
     from rides.models import RideTip
 
-    payments = Payment.objects.filter(ride__driver=user, ride__status="COMPLETED")
+    payments = Payment.objects.filter(ride__driver=user, ride__status="COMPLETED").exclude(method__in=["WALLET", "SSL_DEMO"])
     rev = payments.aggregate(revenue=Sum("amount"), fees=Sum("platform_fee"))
     gross = Decimal(str(rev["revenue"] or 0))
     fees = Decimal(str(rev["fees"] or 0))
     net_earnings = gross - fees
 
-    tips_total = Decimal(str(RideTip.objects.filter(ride__driver=user).aggregate(total=Sum("amount"))["total"] or 0))
+    tips_total = Decimal(str(RideTip.objects.filter(ride__driver=user).exclude(ride__payment_method__in=["WALLET", "SSL_DEMO"]).aggregate(total=Sum("amount"))["total"] or 0))
 
     total_income = net_earnings + tips_total
 

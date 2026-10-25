@@ -196,7 +196,7 @@ class RiderStats(APIView):
         totals = completed.aggregate(ride_count=Count("id"))
         payment_agg = Payment.objects.filter(
             ride__rider=request.user, ride__status="COMPLETED"
-        ).aggregate(total_spent=Sum("amount"))
+        ).exclude(method__in=["WALLET", "SSL_DEMO"]).aggregate(total_spent=Sum("amount"))
         rating_agg = request.user.given_ratings.aggregate(avg_given=Avg("score"))
 
         # Top 5 favourite routes (pickup_label -> destination_label)

@@ -35,6 +35,7 @@
     <button class="nav-toggle" id="nav-toggle" aria-label="Toggle navigation" aria-expanded="false" aria-controls="site-nav">{% include 'webapp/icon.html' with name='menu' %}</button>
   </header>
   <main id="main">{% block content %}{% endblock %}</main>
+  {% include 'webapp/developer_credit.html' %}
   <script>document.getElementById('nav-toggle')?.addEventListener('click',function(){var nav=document.getElementById('site-nav');var open=nav.classList.toggle('open');this.setAttribute('aria-expanded',open);});</script>
   {% block scripts %}{% endblock %}
 </body>

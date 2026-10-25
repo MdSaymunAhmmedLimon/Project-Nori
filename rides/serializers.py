@@ -93,6 +93,8 @@ class RequestRideSerializer(WritableFieldsOnlyMixin, serializers.Serializer):
     request_id = serializers.UUIDField()
     payment_method = serializers.ChoiceField(choices=Ride.PaymentMethod.choices, default="CASH")
     promo_code = serializers.CharField(max_length=20, required=False, allow_blank=True, default="")
+    demo_channel = serializers.ChoiceField(choices=["BKASH", "NAGAD", "CARD", "BANK"], required=False)
+    demo_outcome = serializers.ChoiceField(choices=["SUCCESS", "FAILED", "CANCELLED"], required=False)
 
 
 class ActionSerializer(WritableFieldsOnlyMixin, serializers.Serializer):
@@ -111,7 +113,7 @@ class RatingInputSerializer(WritableFieldsOnlyMixin, serializers.Serializer):
     score = serializers.IntegerField(min_value=1, max_value=5)
     comment = serializers.CharField(max_length=500, required=False, allow_blank=True, default="")
     feedback_tags = serializers.ListField(
-        child=serializers.CharField(max_length=50), required=False, default=list
+        child=serializers.CharField(max_length=50), required=False, default=list, max_length=6
     )
 
 
@@ -195,7 +197,7 @@ class RideSerializer(serializers.ModelSerializer):
         except Payment.DoesNotExist:
             return None
         return {"id": str(payment.pk), "amount": str(payment.amount), "currency": payment.currency,
-                "status": payment.status, "method": payment.method, "paid_at": payment.paid_at}
+                "status": payment.status, "method": payment.method, "paid_at": payment.paid_at, "is_demo": payment.is_demo}
 
 
 class OfferSerializer(serializers.ModelSerializer):
@@ -211,6 +213,8 @@ class ScheduleRideInputSerializer(WritableFieldsOnlyMixin, serializers.Serialize
     quote_id = serializers.UUIDField()
     payment_method = serializers.ChoiceField(choices=Ride.PaymentMethod.choices, default="CASH")
     scheduled_for = serializers.DateTimeField()
+    demo_channel = serializers.ChoiceField(choices=["BKASH", "NAGAD", "CARD", "BANK"], required=False)
+    demo_outcome = serializers.ChoiceField(choices=["SUCCESS", "FAILED", "CANCELLED"], required=False)
 
 
 class RescheduleRideInputSerializer(WritableFieldsOnlyMixin, serializers.Serializer):

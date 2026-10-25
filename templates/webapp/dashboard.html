@@ -8,6 +8,7 @@
     <nav class="workspace-nav" aria-label="Dashboard navigation">
       <button type="button" data-tab="ride" class="nav-item active" aria-pressed="true" aria-label="{% if user.role == 'DRIVER' %}Drive{% else %}Book a ride{% endif %}" title="{% if user.role == 'DRIVER' %}Drive{% else %}Book a ride{% endif %}"><span>{% include 'webapp/icon.html' with name='ride' %}</span><span class="nav-label">{% if user.role == 'DRIVER' %}Drive{% else %}Book a ride{% endif %}</span></button>
       <button type="button" data-tab="history" class="nav-item" aria-pressed="false" aria-label="My trips" title="My trips"><span>{% include 'webapp/icon.html' with name='history' %}</span><span class="nav-label">My trips</span></button>
+      {% if user.role == 'RIDER' %}<button type="button" data-tab="wallet" class="nav-item" aria-pressed="false" aria-label="Nori Wallet" title="Nori Wallet"><span>{% include 'webapp/icon.html' with name='wallet' %}</span><span class="nav-label">Nori Wallet</span></button>{% endif %}
       {% if user.role == 'DRIVER' %}<button type="button" data-tab="earnings" class="nav-item" aria-pressed="false" aria-label="Earnings" title="Earnings"><span>{% include 'webapp/icon.html' with name='wallet' %}</span><span class="nav-label">Earnings</span></button>{% endif %}
       <button type="button" data-tab="account" class="nav-item" aria-pressed="false" aria-label="My profile" title="My profile"><span>{% include 'webapp/icon.html' with name='account' %}</span><span class="nav-label">My profile</span></button>
       <button type="button" data-tab="notifications" class="nav-item" aria-pressed="false" aria-label="Activity" title="Activity"><span>{% include 'webapp/icon.html' with name='notifications' %}</span><span class="nav-label">Activity</span> <span id="notification-count" class="count-badge" hidden></span></button>
@@ -16,11 +17,18 @@
     </nav><div class="sidebar-note"><span class="status-dot"></span><span id="connection-status">Connecting live updates…</span></div>
   </aside>
   <div class="workspace-main"><div id="toast" role="status" aria-live="polite" hidden></div>
-    <section id="tab-ride" class="tab-panel"><div class="page-heading"><div><div class="eyebrow">{% if user.role == 'DRIVER' %}DRIVER WORKSPACE{% else %}YOUR NEXT JOURNEY{% endif %}</div><h1>{% if user.role == 'DRIVER' %}Ready when you are.{% else %}Where to today?{% endif %}</h1><p class="heading-description">{% if user.role == 'DRIVER' %}Manage your availability and find your next trip.{% else %}Plan your route. See your fare. Travel with confidence.{% endif %}</p></div><span id="availability-badge" class="pill">{% if user.role == 'DRIVER' %}Offline{% else %}Your city awaits{% endif %}</span></div>
+    <section id="tab-ride" class="tab-panel"><div class="page-heading"><div><div class="eyebrow">{% if user.role == 'DRIVER' %}DRIVER WORKSPACE{% else %}LET'S GET YOU THERE{% endif %}</div><h1>{% if user.role == 'DRIVER' %}Ready when you are.{% else %}Where to, {{ user.first_name|default:user.username }}?{% endif %}</h1><p class="heading-description">{% if user.role == 'DRIVER' %}Manage your availability and find your next trip.{% else %}Your everyday ride, a little easier.{% endif %}</p></div><div class="heading-actions"><span id="availability-badge" class="pill">{% if user.role == 'DRIVER' %}Offline{% else %}Private rides{% endif %}</span><button type="button" class="button secondary small" id="open-safety">{% include 'webapp/icon.html' with name='shield' %} Safety</button></div></div>
+      {% if user.role == 'RIDER' %}
+      <div class="journey-shortcuts" aria-label="Ride shortcuts">
+        <button type="button" data-shortcut="now">{% include 'webapp/icon.html' with name='ride' %}<span><strong>Ride now</strong><small>Let's get moving</small></span><span aria-hidden="true">↗</span></button>
+        <button type="button" data-shortcut="schedule">{% include 'webapp/icon.html' with name='history' %}<span><strong>Pre-book a ride</strong><small>Plan up to 7 days ahead</small></span><span aria-hidden="true">↗</span></button>
+        <button type="button" data-shortcut="saved">{% include 'webapp/icon.html' with name='home' %}<span><strong>Saved places</strong><small>Your everyday stops</small></span><span aria-hidden="true">↗</span></button>
+      </div>
+      {% endif %}
       <div class="ride-layout"><div class="ride-controls">
       {% if user.role == 'RIDER' %}
-        <article class="panel" id="booking-panel"><div class="panel-heading"><h2>Plan your ride</h2><span class="pill success">Private · 1 Rider</span></div><p class="muted">Choose your pickup and destination to get an upfront fare.</p>
-        <details class="booking-saved-places"><summary>Choose a saved place</summary><div id="booking-saved-places-list" aria-live="polite"></div></details>
+        <article class="panel" id="booking-panel"><div class="panel-heading"><h2>Plan your ride</h2><span class="booking-step" id="booking-step">1 of 2 · Your route</span></div><p class="muted">A few details, and you're on your way.</p>
+        <details class="booking-saved-places"><summary>Choose a saved place</summary><div id="booking-saved-places-list" aria-live="polite"></div><button type="button" id="manage-booking-places" class="plain-link">Add or edit saved places →</button></details>
         <form id="quote-form">
           <input type="hidden" name="pickup_latitude" id="pickup-latitude">
           <input type="hidden" name="pickup_longitude" id="pickup-longitude">
@@ -29,18 +37,18 @@
           <div class="location-input">
             <span class="location-dot pickup"></span>
             <label for="pickup-label">Pickup location</label>
-            <input id="pickup-label" name="pickup_label" placeholder="Search pickup (e.g. Banani, Airport)..." maxlength="200" autocomplete="off" required>
-            <button type="button" class="map-picker" data-pick="pickup" aria-label="Select pickup on map" title="Choose on map">⌖</button>
+            <input id="pickup-label" name="pickup_label" placeholder="Enter pickup location" maxlength="200" autocomplete="off" required>
+            <button type="button" class="map-picker" data-pick="pickup" aria-label="Select pickup on map" title="Choose on map">{% include 'webapp/icon.html' with name='pin' %}</button>
             <div id="pickup-places" class="places-dropdown" hidden></div>
           </div>
           <div class="location-input">
             <span class="location-dot destination"></span>
             <label for="destination-label">Destination</label>
-            <input id="destination-label" name="destination_label" placeholder="Search destination (e.g. Dhanmondi, Gulshan)..." maxlength="200" autocomplete="off" required>
-            <button type="button" class="map-picker" data-pick="destination" aria-label="Select destination on map" title="Choose on map">⌖</button>
+            <input id="destination-label" name="destination_label" placeholder="Where are you going?" maxlength="200" autocomplete="off" required>
+            <button type="button" class="map-picker" data-pick="destination" aria-label="Select destination on map" title="Choose on map">{% include 'webapp/icon.html' with name='pin' %}</button>
             <div id="destination-places" class="places-dropdown" hidden></div>
           </div>
-          <div class="booking-route-actions"><button type="button" id="swap-route" class="button secondary small">Swap pickup and destination</button></div>
+          <div class="booking-route-actions"><button type="button" id="use-pickup-location" class="plain-link location-link">{% include 'webapp/icon.html' with name='locate' %} Use my location</button><button type="button" id="swap-route" class="plain-link" aria-label="Swap pickup and destination">{% include 'webapp/icon.html' with name='swap' %} Swap</button></div>
           <div id="booking-stops" class="booking-stops" hidden><p id="booking-stops-summary"></p><button type="button" id="clear-booking-stops" class="plain-link">Remove stops</button></div>
           <div class="quick-places-container">
             <label class="form-hint" style="display:block;margin-bottom:6px;">Popular destinations:</label>
@@ -53,15 +61,15 @@
               <button type="button" class="quick-place-pill" data-dest="Motijheel Commercial Area / Shapla Chattar" data-lat="23.7289" data-lon="90.4190">Motijheel</button>
             </div>
           </div>
-          <div class="form-grid" style="margin-bottom:12px;">
-            <label>Vehicle type
-              <select name="vehicle_class" id="vehicle-class">
-                <option value="STANDARD">Standard sedan</option>
-                <option value="COMFORT">Comfort</option>
-                <option value="XL">XL SUV</option>
-                <option value="MOTO">Moto</option>
-              </select>
-            </label>
+          <fieldset class="vehicle-options"><legend>Choose your ride</legend>
+            <label class="vehicle-option"><input type="radio" name="ride_choice" value="STANDARD" checked><span>{% include 'webapp/vehicle_art.html' with kind='STANDARD' %}<strong>Nori Car</strong><small>Everyday comfort</small></span></label>
+            <label class="vehicle-option"><input type="radio" name="ride_choice" value="MOTO"><span>{% include 'webapp/vehicle_art.html' with kind='MOTO' %}<strong>Nori Moto</strong><small>Light on your wallet</small></span></label>
+            <label class="vehicle-option"><input type="radio" name="ride_choice" value="COMFORT"><span>{% include 'webapp/vehicle_art.html' with kind='COMFORT' %}<strong>Comfort</strong><small>An upgraded ride</small></span></label>
+            <label class="vehicle-option"><input type="radio" name="ride_choice" value="XL"><span>{% include 'webapp/vehicle_art.html' with kind='XL' %}<strong>Nori XL</strong><small>More room to relax</small></span></label>
+          </fieldset>
+          <input type="hidden" name="vehicle_class" id="vehicle-class" value="STANDARD">
+          <p class="ride-choice-note" id="ride-choice-note">Your own private sedan. Fare shown before you book.</p>
+          <div class="booking-time">
             <label>When to ride
               <select id="booking-type-select">
                 <option value="NOW">Ride now</option>
@@ -75,8 +83,8 @@
             </label>
             <p class="form-hint" id="schedule-timezone"></p>
           </div>
-          <button type="button" id="use-pickup-location" class="plain-link location-link">⌖ Use my current location</button>
           <button class="button full" type="submit">See my fare <span>→</span></button>
+          <p class="booking-reassurance">{% include 'webapp/icon.html' with name='shield' %} Review your fare before confirming. No booking yet.</p>
         </form>
         <div id="quote-result" hidden></div></article>
       {% else %}
@@ -85,7 +93,7 @@
         <article class="panel" id="offers-panel"><div class="panel-heading"><h2>Nearby requests</h2><span class="live-label"><span class="status-dot"></span>LIVE</span></div><div id="offers-list"><div class="empty-state">Go online to find your next trip.</div></div></article>
       {% endif %}
       <article class="panel" id="trip-panel" hidden><div id="trip-content"></div><button id="return-active-trip" class="button full" hidden>Return to current trip →</button></article>
-      </div><div class="map-panel"><div class="map-caption"><span class="status-dot"></span><span id="map-instruction">{% if user.role == 'RIDER' %}Click the map to choose your pickup{% else %}Your city, at a glance{% endif %}</span></div><div id="ride-map" aria-label="Interactive ride map"></div><div class="map-footnote">Map lines connect selected points. They are not turn-by-turn directions.</div></div></div>
+      </div><div class="ride-map-column"><div class="map-panel"><div class="map-caption"><span class="status-dot"></span><span id="map-instruction" role="status">{% if user.role == 'RIDER' %}Choose a pickup to start your journey{% else %}Your city, at a glance{% endif %}</span></div><div id="ride-map" aria-label="Interactive ride map"></div><button type="button" id="map-overview" class="map-overview" aria-label="Show route overview" title="Show route overview">{% include 'webapp/icon.html' with name='locate' %}</button><div class="map-footnote">Map lines connect selected points. They are not turn-by-turn directions.</div></div>{% include 'webapp/top_riders.html' %}</div></div>
     </section>
     <section id="tab-history" class="tab-panel" hidden>
       <div class="page-heading"><div class="eyebrow">THE PLACES YOU'VE BEEN</div><h1>Your journeys.</h1></div>
@@ -96,7 +104,7 @@
           <label>Status<select id="history-filter" name="status"><option value="">All trips</option><option value="COMPLETED">Completed</option><option value="CANCELLED">Cancelled</option><option value="REQUESTED">Requested</option><option value="SEARCHING">Searching</option><option value="ACCEPTED">Driver assigned</option><option value="DRIVER_ARRIVING">Driver on the way</option><option value="DRIVER_ARRIVED">Driver arrived</option><option value="IN_PROGRESS">In progress</option></select></label>
           <label>From date<input type="date" name="date_from"></label>
           <label>Through date<input type="date" name="date_to"></label>
-          <label>Payment<select name="payment_method"><option value="">All methods</option><option value="CASH">Cash</option><option value="CARD">Card</option></select></label>
+          <label>Payment<select name="payment_method"><option value="">All methods</option><option value="CASH">Cash</option><option value="CARD">Card</option><option value="WALLET">Nori Wallet (demo)</option><option value="SSL_DEMO">SSLCOMMERZ (demo)</option></select></label>
           <div class="report-actions"><button class="button small" type="submit">Apply filters</button><button class="button secondary small" type="reset">Reset</button></div>
         </form>
         <p class="form-hint">Dates use UTC and the time you requested the trip. Downloads include all matching trips, up to 5,000 or 4 MB. Upcoming scheduled rides appear when filters are reset.</p>
@@ -148,9 +156,33 @@
       <div id="payouts-content"></div>
     </section>
     {% endif %}
+    {% if user.role == 'RIDER' %}
+    <section id="tab-wallet" class="tab-panel" hidden>
+      <div class="page-heading"><div><div class="eyebrow">READY FOR YOUR NEXT RIDE</div><h1>Nori Wallet</h1><p class="heading-description">Top up, prepay, and keep track of your demo credits.</p></div><span class="pill warning">DEMO ONLY</span></div>
+      <div class="wallet-layout"><div>
+        <article class="wallet-card"><span class="wallet-brand">{% include 'webapp/icon.html' with name='wallet' %} nori wallet.</span><p>Available demo balance</p><strong id="wallet-balance">Loading…</strong><span id="wallet-currency">Demo credits · no cash value</span><div class="wallet-card-footer">Prepay your next journey <span aria-hidden="true">↗</span></div></article>
+        <article class="panel wallet-topup"><h2>Add demo credits</h2><p class="muted">Try SSLCOMMERZ checkout without real money or payment details.</p><form id="wallet-topup-form"><label for="wallet-topup-amount">Amount</label><input id="wallet-topup-amount" name="amount" type="number" min="10" max="10000" step="0.01" value="500" required><div class="topup-presets"><button type="button" data-topup="100">+100</button><button type="button" data-topup="500">+500</button><button type="button" data-topup="1000">+1,000</button></div><button type="submit" class="button full">Top up with SSLCOMMERZ <span>↗</span></button></form><p class="form-hint">Simulated bKash, Nagad, card, and internet banking. Credits cannot be withdrawn or transferred.</p></article>
+      </div><article class="panel"><div class="panel-heading"><h2>Wallet activity</h2><button type="button" id="refresh-wallet" class="plain-link">Refresh</button></div><p class="muted">Top-ups, prepaid rides, and cancellation refunds.</p><div id="wallet-transactions" aria-live="polite"></div><nav class="pagination" aria-label="Wallet activity pages"><button type="button" id="wallet-prev" class="button secondary small" disabled>Previous</button><span id="wallet-page"></span><button type="button" id="wallet-next" class="button secondary small" disabled>Next</button></nav></article></div>
+      <p class="demo-notice">Demo prepayments are refunded in full if a ride or reservation is cancelled, or if driver search expires. SSLCOMMERZ demo refunds return to the simulated payment source; wallet refunds return to Nori Wallet.</p>
+    </section>
+    {% endif %}
     <noscript><div class="panel">Enable JavaScript to book and manage rides. Account registration and login work without it.</div></noscript>
   </div>
 </div>
+<dialog id="safety-dialog" class="safety-dialog" aria-labelledby="safety-title">
+  <div class="panel-heading"><span class="safety-symbol">{% include 'webapp/icon.html' with name='shield' %}</span><button type="button" id="close-safety" class="icon-button" aria-label="Close safety centre">{% include 'webapp/icon.html' with name='close' %}</button></div>
+  <div class="eyebrow">PEACE OF MIND, EVERY MILE</div><h2 id="safety-title">Your safety centre</h2><p class="muted">A little preparation makes a better journey.</p>
+  <div class="safety-feature"><strong>Know your driver</strong><p>Check the driver's name and vehicle plate against your trip details before getting in.</p></div>
+  <div class="safety-feature"><strong>Keep someone in the loop</strong><p>Use “Share live trip” from your active ride to send a tracking link to someone you trust.</p></div>
+  <div class="safety-feature"><strong>Your trusted contacts</strong><p>Keep emergency contacts up to date in your profile. During a ride, the SOS action records an alert for support.</p></div>
+  <p class="safety-callout">In immediate danger, contact your local emergency services directly. An in-app alert does not call emergency services.</p>
+  <button type="button" id="manage-safety-contacts" class="button full">Manage emergency contacts {% include 'webapp/icon.html' with name='arrow' %}</button>
+</dialog>
+<dialog id="demo-checkout" class="demo-checkout" aria-labelledby="demo-checkout-title">
+  <div class="panel-heading"><span class="gateway-wordmark">SSLCOMMERZ <small>LOCAL DEMO</small></span><button type="button" id="close-demo-checkout" class="icon-button" aria-label="Close demo checkout">{% include 'webapp/icon.html' with name='close' %}</button></div>
+  <h2 id="demo-checkout-title">Complete demo payment</h2><p id="demo-checkout-purpose" class="muted"></p><strong id="demo-checkout-amount" class="checkout-amount"></strong><p class="demo-notice">Simulation only. No real money, card numbers, PINs, or OTPs are needed.</p>
+  <form id="demo-checkout-form"><fieldset class="gateway-options"><legend>Choose a demo payment option</legend><label><input type="radio" name="channel" value="BKASH" checked><span class="channel-bkash">bKash</span></label><label><input type="radio" name="channel" value="NAGAD"><span class="channel-nagad">Nagad</span></label><label><input type="radio" name="channel" value="CARD"><span>Debit / credit card</span></label><label><input type="radio" name="channel" value="BANK"><span>Internet banking</span></label></fieldset><p id="demo-checkout-status" role="status" aria-live="polite"></p><button type="submit" data-outcome="SUCCESS" class="button full">Simulate successful payment</button><div class="demo-test-actions"><button type="submit" data-outcome="FAILED" class="plain-link">Test failed payment</button><button type="submit" data-outcome="CANCELLED" class="plain-link">Test cancelled payment</button></div></form>
+</dialog>
 {{ app_config|json_script:"app-config" }}
 {% endblock %}
 {% block scripts %}<script src="{% static 'vendor/leaflet/leaflet.js' %}" defer></script><script src="{% static 'webapp/app.js' %}" defer></script>{% endblock %}

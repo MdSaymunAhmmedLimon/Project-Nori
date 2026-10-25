@@ -8,12 +8,45 @@ from django.utils import timezone
 from rest_framework import permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework.pagination import PageNumberPagination
 
 from drivers.permissions import IsDriver
 from rides.reporting import DateRangeSerializer, apply_date_range
 
 from .models import Payment
 from .services import confirm_cash, create_checkout, process_stripe_event
+
+
+class WalletOverview(APIView):
+    def get(self, request):
+        from rides.services import require_role
+        from .models import Wallet
+        require_role(request.user, "RIDER")
+        wallet = Wallet.objects.filter(user=request.user).first()
+        return Response({"balance": str(wallet.balance) if wallet else "0.00",
+            "currency": wallet.currency if wallet else settings.RIDE_CURRENCY, "is_demo": True})
+
+
+class WalletHistory(APIView):
+    def get(self, request):
+        from rides.services import require_role
+        from .models import WalletTransaction
+        from .serializers import WalletTransactionSerializer
+        require_role(request.user, "RIDER")
+        paginator = PageNumberPagination()
+        paginator.page_size = 20
+        entries = paginator.paginate_queryset(WalletTransaction.objects.filter(wallet__user=request.user), request)
+        return paginator.get_paginated_response(WalletTransactionSerializer(entries, many=True).data)
+
+
+class WalletTopUp(APIView):
+    def post(self, request):
+        from .demo import top_up
+        from .serializers import TopUpInputSerializer, WalletTransactionSerializer
+        serializer = TopUpInputSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        entry = top_up(request.user, **serializer.validated_data)
+        return Response(WalletTransactionSerializer(entry).data)
 
 
 class CashPayment(APIView):
@@ -51,7 +84,7 @@ class Earnings(APIView):
     def get(self, request):
         filters = DateRangeSerializer(data=request.query_params)
         filters.is_valid(raise_exception=True)
-        payments = Payment.objects.filter(ride__driver=request.user, ride__status="COMPLETED")
+        payments = Payment.objects.filter(ride__driver=request.user, ride__status="COMPLETED").exclude(method__in=["WALLET", "SSL_DEMO"])
         payments = apply_date_range(payments, filters.validated_data, "ride__completed_at")
         net = ExpressionWrapper(F("amount") - F("platform_fee"), output_field=DecimalField(max_digits=10, decimal_places=2))
         totals = list(payments.values("currency").annotate(

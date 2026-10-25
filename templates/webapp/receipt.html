@@ -7,6 +7,7 @@
   <article class="panel receipt-document">
     <div class="panel-heading"><div><div class="eyebrow">NORI · YOUR JOURNEY</div><h1>{% if payment.status == 'PAID' %}Trip receipt{% else %}Trip summary{% endif %}</h1></div><span class="pill {% if payment.status == 'PAID' %}success{% else %}warning{% endif %}">{{ payment.get_status_display }}</span></div>
     <p class="muted receipt-reference">Trip {{ ride.id }}<br>Payment {{ payment.id }}</p>
+    {% if payment.is_demo %}<p class="demo-notice"><strong>DEMO RECEIPT</strong> · No real money was collected. This payment uses simulated credits and does not count toward payable earnings.</p>{% endif %}
     <div class="route-summary"><small>PICKUP</small>{{ ride.quote.pickup_label }}<small>DESTINATION</small>{{ ride.quote.destination_label }}</div>
     <dl class="receipt-details">
       <div><dt>Rider</dt><dd>{% firstof ride.rider.get_full_name ride.rider.username %}</dd></div>

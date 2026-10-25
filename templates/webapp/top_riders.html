@@ -1,0 +1,10 @@
+<aside class="top-riders" aria-label="Top riders demo leaderboard">
+  <div class="top-riders-heading"><span class="leaderboard-symbol">{% include 'webapp/icon.html' with name='trophy' %}</span><div><span class="eyebrow">THE NORI COMMUNITY</span><h2>Top riders</h2></div><span class="pill warning">DEMO</span></div>
+  <p class="top-riders-intro">A little recognition for everyday journeys.</p>
+  <ol class="top-riders-list">
+    {% include 'webapp/top_rider_row.html' with rank='1' initials='AR' name='Ayesha R.' trips='160' rating='4.9' %}
+    {% include 'webapp/top_rider_row.html' with rank='2' initials='TH' name='Tanvir H.' trips='142' rating='4.9' %}
+    {% include 'webapp/top_rider_row.html' with rank='3' initials='NS' name='Nusrat S.' trips='128' rating='4.8' %}
+  </ol>
+  <p class="top-riders-note">Sample profiles and stats for this demo. These are not live rankings.</p>
+</aside>

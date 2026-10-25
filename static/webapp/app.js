@@ -18,6 +18,35 @@
   let scheduledPage = 1;
   let favouritePage = 1, lostItemPage = 1, favouriteRequest = 0, lostItemRequest = 0;
   let initialRideId = new URLSearchParams(location.search).get('ride');
+  const paymentNames = {CASH:'Cash', CARD:'Card', WALLET:'Nori Wallet · demo', SSL_DEMO:'SSLCOMMERZ · demo'};
+  const isDemoMethod = method => ['WALLET', 'SSL_DEMO'].includes(method);
+  let walletPage = 1, walletRequest = 0, checkoutTask = null, checkoutResolve = null, checkoutBusy = false;
+
+  async function loadWallet(page = walletPage) {
+    const version = ++walletRequest;
+    const [wallet, entries] = await Promise.all([api('payments/wallet/'), api(`payments/wallet/transactions/?page=${page}`)]);
+    if (version !== walletRequest) return;
+    walletPage = page;
+    $('#wallet-balance').textContent = `${wallet.currency} ${Number(wallet.balance).toLocaleString(undefined, {minimumFractionDigits:2})}`;
+    $('#wallet-currency').textContent = 'Demo credits · no cash value';
+    $('#wallet-transactions').innerHTML = entries.results.length ? entries.results.map(entry => `<article class="wallet-entry"><span class="wallet-entry-icon">${entry.kind === 'RIDE' ? '↗' : '↙'}</span><div><strong>${esc(entry.description)}</strong><small>${esc(date(entry.created_at))}</small><small>Balance after: ${amount(entry.balance_after, wallet.currency)}</small></div><strong class="${Number(entry.amount) > 0 ? 'wallet-credit' : ''}">${Number(entry.amount) > 0 ? '+' : '−'}${amount(Math.abs(Number(entry.amount)), wallet.currency)}</strong></article>`).join('') : '<div class="empty-state">Your wallet starts here.<br>Add demo credits to try prepaid rides.</div>';
+    $('#wallet-page').textContent = `Page ${page}`;
+    $('#wallet-prev').disabled = !entries.previous;
+    $('#wallet-next').disabled = !entries.next;
+    $('#wallet-prev').dataset.restDisabled = String(!entries.previous);
+    $('#wallet-next').dataset.restDisabled = String(!entries.next);
+  }
+  function demoCheckout(details, task) {
+    const dialog = $('#demo-checkout');
+    if (dialog.open) return Promise.reject(new Error('Finish the open demo checkout first.'));
+    checkoutTask = task;
+    $('#demo-checkout-form').reset();
+    $('#demo-checkout-purpose').textContent = details.purpose;
+    $('#demo-checkout-amount').textContent = `${details.currency} ${Number(details.amount).toFixed(2)}`;
+    $('#demo-checkout-status').textContent = '';
+    dialog.showModal();
+    return new Promise(resolve => { checkoutResolve = resolve; });
+  }
 
   function toast(message, error = false) {
     clearTimeout(toastTimer);
@@ -53,9 +82,9 @@
   }
   async function busy(button, task) {
     if (button?.disabled) return;
-    if (button) button.disabled = true;
+    if (button) { button.disabled = true; button.setAttribute('aria-busy', 'true'); }
     try { await task(); } catch (error) { toast(error.message || 'Please try again.', true); }
-    finally { if (button) button.disabled = button.dataset.restDisabled === 'true'; }
+    finally { if (button) { button.disabled = button.dataset.restDisabled === 'true'; button.removeAttribute('aria-busy'); } }
   }
   function onForm(id, handler) {
     const form = $(id); if (!form) return;
@@ -112,9 +141,10 @@
     if (form.elements.pickup_latitude.value && form.elements.destination_latitude.value) drawRoute({...Object.fromEntries(new FormData(form)), stops:bookingStops});
   }
   function setupMap() {
-    if (!window.L) { $('#map-instruction').textContent = 'Map unavailable. Enter coordinates to plan a ride.'; return; }
+    if (!window.L) { $('#map-instruction').textContent = 'Map unavailable. Search for a pickup and destination to continue.'; return; }
     map = L.map('ride-map', {zoomControl:true}).setView([config.map.latitude, config.map.longitude], 13);
-    L.tileLayer(config.map.tileUrl, {maxZoom:19, attribution:esc(config.map.attribution) + ' · <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">License</a>'}).addTo(map);
+    const tiles = L.tileLayer(config.map.tileUrl, {maxZoom:19, attribution:esc(config.map.attribution) + ' · <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">License</a>'}).addTo(map);
+    tiles.on('tileerror', () => { $('#map-instruction').textContent = 'Map tiles unavailable. You can still search for locations.'; });
     map.on('click', event => { if (config.user.role === 'RIDER') choosePoint(state.pick, event.latlng.lat, event.latlng.lng); });
   }
   function gps() {
@@ -152,6 +182,7 @@
     });
     if (tab === 'ride') setTimeout(() => map?.invalidateSize(), 30);
     if (tab === 'history') await loadHistory();
+    if (tab === 'wallet') await loadWallet();
     if (tab === 'earnings') await loadEarnings();
     if (tab === 'notifications') await loadNotifications();
     if (tab === 'stats') await loadStats();
@@ -201,6 +232,7 @@
       form.elements[`${kind}_label`].dataset.generated = 'false';
     }
     form.elements.vehicle_class.value = ride.quote.vehicle_class || 'STANDARD';
+    syncVehicleChoice();
     bookingStops = (ride.quote.stops || []).map(({label, latitude, longitude}) => ({label, latitude, longitude}));
     renderBookingStops();
     $('#booking-type-select').value = 'NOW';
@@ -380,9 +412,9 @@
     if (config.user.role === 'DRIVER' && actions[ride.status]) { const [action, label] = actions[ride.status]; actionButton = `<button class="button full" data-ride-action="${action}">${label} →</button>`; }
     const canCancel = !['IN_PROGRESS','COMPLETED','CANCELLED'].includes(ride.status);
     let payment = '';
-    if (ride.payment) payment = `<div class="receipt"><p><strong>${amount(ride.payment.amount, ride.payment.currency)}</strong> · ${esc(ride.payment.method.toLowerCase())}</p><small>${ride.payment.status === 'PAID' ? 'Paid · ' + esc(date(ride.payment.paid_at)) : 'Payment pending'}</small>${ride.payment.status !== 'PAID' && config.user.role === 'DRIVER' && ride.payment.method === 'CASH' ? '<button class="button secondary full" data-payment="cash">Confirm cash received</button>' : ''}${ride.payment.status !== 'PAID' && config.user.role === 'RIDER' && ride.payment.method === 'CARD' ? '<button class="button full" data-payment="checkout">Pay securely by card ↗</button>' : ''}<a class="plain-link receipt-link" href="/app/rides/${esc(ride.id)}/receipt/">${ride.payment.status === 'PAID' ? 'View receipt' : 'View trip summary'} ↗</a></div>`;
+    if (ride.payment) payment = `<div class="receipt"><p><strong>${amount(ride.payment.amount, ride.payment.currency)}</strong> · ${esc(paymentNames[ride.payment.method] || ride.payment.method)}</p><small>${ride.payment.status === 'REFUNDED' ? 'Demo payment refunded in full' : ride.payment.status === 'PAID' ? (ride.payment.is_demo ? 'Prepaid with demo credits · ' : 'Paid · ') + esc(date(ride.payment.paid_at)) : 'Payment pending'}</small>${ride.payment.is_demo ? '<p class="demo-notice">Demo only · no real money charged. This trip does not add to payable driver earnings.</p>' : ''}${ride.payment.status !== 'PAID' && config.user.role === 'DRIVER' && ride.payment.method === 'CASH' ? '<button class="button secondary full" data-payment="cash">Confirm cash received</button>' : ''}${ride.payment.status !== 'PAID' && config.user.role === 'RIDER' && ride.payment.method === 'CARD' ? '<button class="button full" data-payment="checkout">Pay securely by card ↗</button>' : ''}${completed ? `<a class="plain-link receipt-link" href="/app/rides/${esc(ride.id)}/receipt/">${ride.payment.is_demo ? 'View demo receipt' : ride.payment.status === 'PAID' ? 'View receipt' : 'View trip summary'} ↗</a>` : ''}</div>`;
     const rated = ride.ratings.some(rating => rating.author === config.user.id);
-    const rating = completed && !rated ? '<form id="rating-form" class="rating-form"><h3>How was your journey?</h3><label>Rating<select name="score"><option value="5">★★★★★ · Excellent</option><option value="4">★★★★ · Good</option><option value="3">★★★ · Okay</option><option value="2">★★ · Could be better</option><option value="1">★ · Poor</option></select></label><label>Your feedback<textarea name="comment" maxlength="500" placeholder="Anything you would like to share? (optional)"></textarea></label><button class="button secondary full" type="submit">Send rating</button></form>' : (rated ? '<p class="form-hint">Thanks for sharing your rating.</p>' : '');
+    const rating = completed && !rated ? `<form id="rating-form" class="rating-form"><h3>How was your journey?</h3><fieldset class="star-rating"><legend>Choose a rating</legend>${[1,2,3,4,5].map(score => `<label><input type="radio" name="score" value="${score}" aria-label="${score} star${score === 1 ? '' : 's'}" required><span aria-hidden="true">★</span></label>`).join('')}</fieldset><fieldset class="rating-tags"><legend>What stood out? (optional)</legend>${['Friendly','On time','Safe journey','Great communication'].map(tag => `<label><input type="checkbox" name="feedback_tags" value="${tag}"><span>${tag}</span></label>`).join('')}</fieldset><label>Your feedback<textarea name="comment" maxlength="500" placeholder="Anything you would like to share? (optional)"></textarea></label><button class="button secondary full" type="submit">Send rating</button></form>` : (rated ? `<p class="rating-thanks">★ You rated this trip ${esc(ride.ratings.find(item => item.author === config.user.id).score)}/5. Thanks for sharing your rating.</p>` : '');
 
     const sosButton = isActive ? `<div style="margin-top:10px;"><button type="button" id="sos-alert-btn" class="button danger small full" style="background:#c0392b;border-color:#c0392b;">🚨 Emergency SOS Alert</button><button type="button" id="share-trip-btn" class="button secondary small full" style="margin-top:8px;">Share live trip</button><div id="share-trip-link" class="form-hint" hidden></div></div>` : '';
     const hasPartner = Boolean(ride.driver && ride.rider);
@@ -399,7 +431,7 @@
       </div>
     ` : '';
 
-    const tipSection = completed && config.user.role === 'RIDER' ? (ride.tip ? `<p class="form-hint" style="color:var(--success,#2e7d32);margin-top:8px;">★ Tip of ${amount(ride.tip, ride.quote.currency)} sent to driver.</p>` : `
+    const tipSection = completed && config.user.role === 'RIDER' && !isDemoMethod(ride.payment_method) ? (ride.tip ? `<p class="form-hint" style="color:var(--success,#2e7d32);margin-top:8px;">★ Tip of ${amount(ride.tip, ride.quote.currency)} sent to driver.</p>` : `
       <div class="tip-section" style="margin-top:12px;padding:10px;background:var(--bg-subtle,#f8f9fa);border-radius:6px;">
         <span style="font-size:13px;font-weight:600;display:block;margin-bottom:6px;">Tip your driver (optional)</span>
         <div style="display:flex;gap:6px;">
@@ -448,8 +480,8 @@
     onForm('#cancel-form', async data => {
       state.selected = await api(`rides/${ride.id}/actions/`, {method:'POST', data:{action:'cancel', ...data}}); toast('Your ride has been cancelled.'); await sync();
     });
-    onForm('#rating-form', async data => {
-      await api(`rides/${ride.id}/rating/`, {method:'POST', data:{...data, score:Number(data.score)}}); toast('Thank you for your feedback.'); await sync();
+    onForm('#rating-form', async (data, form) => {
+      await api(`rides/${ride.id}/rating/`, {method:'POST', data:{score:Number(data.score), comment:data.comment, feedback_tags:new FormData(form).getAll('feedback_tags')}}); toast('Thank you for your feedback.'); await sync();
     });
     $('#trip-content').querySelectorAll('[data-payment]').forEach(button => button.addEventListener('click', () => busy(button, async () => {
       const result = await api(`payments/${ride.id}/${button.dataset.payment}/`, {method:'POST', data:{}});
@@ -557,6 +589,7 @@
           return `<article class="scheduled-card">
             <strong>${esc(s.quote.pickup_label)} &rarr; ${esc(s.quote.destination_label)}</strong>
             <p>Pickup ${esc(date(s.scheduled_for))} &middot; ${amount(s.quote.fare, s.quote.currency)}</p>
+            <p class="form-hint">${isDemoMethod(s.payment_method) ? 'Prepaid · ' : 'Pay after trip · '}${esc(paymentNames[s.payment_method] || s.payment_method)}</p>
             ${upcoming ? '' : '<p class="form-hint">Pickup is due. Waiting for dispatch; reservations expire after 15 minutes.</p>'}
             <div class="scheduled-actions">
               ${upcoming ? `<button type="button" class="button secondary small" data-edit-schedule="${s.id}">Change pickup time</button>
@@ -762,11 +795,100 @@
     socket.onerror = () => socket.close();
   }
 
+  const checkoutDialog = $('#demo-checkout');
+  $('#close-demo-checkout').addEventListener('click', () => { if (!checkoutBusy) checkoutDialog.close(); });
+  checkoutDialog.addEventListener('cancel', event => { if (checkoutBusy) event.preventDefault(); });
+  checkoutDialog.addEventListener('close', () => {
+    checkoutResolve?.(false); checkoutResolve = null; checkoutTask = null;
+  });
+  $('#demo-checkout-form').addEventListener('submit', async event => {
+    event.preventDefault();
+    if (checkoutBusy || !checkoutTask) return;
+    checkoutBusy = true;
+    const channel = new FormData(event.currentTarget).get('channel');
+    const outcome = event.submitter?.dataset.outcome || 'SUCCESS';
+    const controls = checkoutDialog.querySelectorAll('button, input');
+    controls.forEach(control => { control.disabled = true; });
+    $('#demo-checkout-status').textContent = 'Processing demo payment…';
+    try {
+      await checkoutTask({demo_channel:channel, demo_outcome:outcome});
+      const resolve = checkoutResolve; checkoutResolve = null;
+      checkoutDialog.close(); resolve?.(true);
+    } catch (error) {
+      $('#demo-checkout-status').textContent = error.message || 'Unable to finish demo payment. Please try again.';
+    } finally {
+      checkoutBusy = false; controls.forEach(control => { control.disabled = false; });
+    }
+  });
+  onForm('#wallet-topup-form', async data => {
+    const requestId = crypto.randomUUID();
+    const wallet = await api('payments/wallet/');
+    const completed = await demoCheckout({amount:data.amount, currency:wallet.currency, purpose:'Add credits to Nori Wallet'}, payment => api('payments/wallet/top-up/', {method:'POST', data:{amount:data.amount, request_id:requestId, ...payment}}));
+    if (completed) { toast('Demo credits added to Nori Wallet.'); await loadWallet(1); }
+  });
+  document.querySelectorAll('[data-topup]').forEach(button => button.addEventListener('click', () => { $('#wallet-topup-amount').value = button.dataset.topup; }));
+  $('#refresh-wallet')?.addEventListener('click', event => busy(event.currentTarget, () => loadWallet(1)));
+  $('#wallet-prev')?.addEventListener('click', event => busy(event.currentTarget, () => loadWallet(Math.max(1, walletPage - 1))));
+  $('#wallet-next')?.addEventListener('click', event => busy(event.currentTarget, () => loadWallet(walletPage + 1)));
   document.querySelectorAll('[data-tab]').forEach(button => button.addEventListener('click', () => changeTab(button.dataset.tab).catch(error => toast(error.message,true))));
-  document.querySelectorAll('[data-pick]').forEach(button => button.addEventListener('click', () => { state.pick = button.dataset.pick; $('#map-instruction').textContent = `Click the map to set your ${state.pick}`; map?.invalidateSize(); }));
+  document.querySelectorAll('[data-pick]').forEach(button => button.addEventListener('click', () => { state.pick = button.dataset.pick; $('#map-instruction').textContent = `Click the map to set your ${state.pick}`; map?.invalidateSize(); $('.map-panel').scrollIntoView({block:'center', behavior:'smooth'}); }));
+  $('#map-overview')?.addEventListener('click', () => {
+    if (routeLine) map?.fitBounds(routeLine.getBounds(), {padding:[45,65], maxZoom:15});
+    else if (markers.pickup) map?.setView(markers.pickup.getLatLng(), 14);
+    else map?.setView([config.map.latitude, config.map.longitude], 13);
+  });
+  const vehicleDescriptions = {
+    STANDARD:'Your own private sedan. Fare shown before you book.',
+    MOTO:'A motorcycle ride for one. Remember to wear a helmet.',
+    COMFORT:'An upgraded car for a more comfortable journey.',
+    XL:'A larger vehicle with extra space for your journey.'
+  };
+  function syncVehicleChoice() {
+    const selected = $('#vehicle-class')?.value;
+    document.querySelectorAll('[name="ride_choice"]').forEach(input => { input.checked = input.value === selected; });
+    if ($('#ride-choice-note')) $('#ride-choice-note').textContent = vehicleDescriptions[selected] || vehicleDescriptions.STANDARD;
+  }
+  document.querySelectorAll('[name="ride_choice"]').forEach(input => input.addEventListener('change', () => {
+    $('#vehicle-class').value = input.value;
+    syncVehicleChoice(); invalidateQuote();
+  }));
+  const safetyDialog = $('#safety-dialog');
+  $('#open-safety')?.addEventListener('click', () => safetyDialog.showModal());
+  $('#close-safety')?.addEventListener('click', () => safetyDialog.close());
+  safetyDialog?.addEventListener('click', event => {
+    const bounds = safetyDialog.getBoundingClientRect();
+    if (event.target === safetyDialog && (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom)) safetyDialog.close();
+  });
+  $('#manage-safety-contacts')?.addEventListener('click', event => busy(event.currentTarget, async () => {
+    safetyDialog.close(); await changeTab('account');
+    const panel = $('#emergency-contacts-panel, #driver-emergency-contacts-panel');
+    panel?.scrollIntoView({block:'center', behavior:'smooth'});
+    panel?.querySelector('input')?.focus({preventScroll:true});
+  }));
+  document.querySelectorAll('[data-shortcut]').forEach(button => button.addEventListener('click', () => busy(button, async () => {
+    const shortcut = button.dataset.shortcut;
+    if (state.active) { toast('Your current trip is below. Finish or cancel it before booking another.'); $('#trip-panel').scrollIntoView({block:'start'}); return; }
+    await prepareBooking();
+    if (shortcut === 'saved') {
+      $('.booking-saved-places').open = true;
+      $('.booking-saved-places').scrollIntoView({block:'center', behavior:'smooth'});
+      $('.booking-saved-places summary').focus({preventScroll:true});
+      return;
+    }
+    $('#booking-type-select').value = shortcut === 'schedule' ? 'SCHEDULE' : 'NOW';
+    $('#booking-type-select').dispatchEvent(new Event('change'));
+    $('#booking-panel').scrollIntoView({block:'start', behavior:'smooth'});
+    $(shortcut === 'schedule' ? '#schedule-datetime' : '#pickup-label').focus({preventScroll:true});
+  })));
+  $('#manage-booking-places')?.addEventListener('click', event => busy(event.currentTarget, async () => {
+    await changeTab('account');
+    $('#save-place-form').scrollIntoView({block:'center', behavior:'smooth'});
+    $('#save-place-form [name="label"]').focus({preventScroll:true});
+  }));
   function invalidateQuote() {
     state.quoteVersion++;
     state.quote = null; state.requestId = null; state.appliedPromo = null; $('#quote-result').hidden = true;
+    if ($('#booking-step')) $('#booking-step').textContent = '1 of 2 · Your route';
   }
   $('#quote-form')?.addEventListener('input', event => {
     invalidateQuote();
@@ -832,6 +954,7 @@
     const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
     $('#schedule-timezone').textContent = `Times use your device timezone (${zone}). Book more than 15 minutes and up to 7 days ahead. Driver availability is not guaranteed.`;
     bookingTypeSelect.addEventListener('change', () => {
+      invalidateQuote();
       const isSchedule = bookingTypeSelect.value === 'SCHEDULE';
       scheduleRow.hidden = !isSchedule;
       scheduleInput.required = isSchedule;
@@ -846,7 +969,8 @@
   onForm('#quote-form', async data => {
     invalidateQuote();
     const version = state.quoteVersion;
-    const payload = {...data, stops:bookingStops};
+    const {ride_choice, ...routeData} = data;
+    const payload = {...routeData, stops:bookingStops};
     if (!payload.pickup_latitude) { delete payload.pickup_latitude; delete payload.pickup_longitude; }
     if (!payload.destination_latitude) { delete payload.destination_latitude; delete payload.destination_longitude; }
     const quote = await api('rides/quotes/', {method:'POST', data:payload});
@@ -858,6 +982,7 @@
     $('#destination-latitude').value = quote.destination_latitude;
     $('#destination-longitude').value = quote.destination_longitude;
     $('#quote-result').hidden = false;
+    $('#booking-step').textContent = '2 of 2 · Review & confirm';
     const isSchedule = $('#booking-type-select')?.value === 'SCHEDULE';
     $('#quote-result').innerHTML = `
       <div class="fare-box">
@@ -866,13 +991,13 @@
         <div class="fare-meta">
           <span>≈ ${esc(quote.distance_km)} km</span>
           <span>≈ ${quote.estimated_minutes} min</span>
-          <span class="pill success" style="font-size:11px;">👤 Private · 1 Rider</span>
-          ${quote.vehicle_class ? `<span class="pill" style="font-size:11px;">${esc(quote.vehicle_class)}</span>` : ''}
+          <span class="pill success">Private ride</span>
+          ${quote.vehicle_class ? `<span class="pill">${esc({STANDARD:'Nori Car',MOTO:'Nori Moto',COMFORT:'Comfort',XL:'Nori XL'}[quote.vehicle_class] || quote.vehicle_class)}</span>` : ''}
         </div>
         ${quote.surge_multiplier && Number(quote.surge_multiplier) > 1 ? `<div class="pill warning" style="margin:6px 0;display:inline-block;">⚡ Surge pricing active (×${quote.surge_multiplier})</div>` : ''}
         <p class="form-hint">Distance and time are estimates. This trip is reserved exclusively for you. Fare quote valid for 10 minutes.</p>
         <div class="promo-box" ${isSchedule ? 'hidden' : ''} style="margin:12px 0;padding:10px;background:var(--bg-subtle,#f4f6f8);border-radius:6px;">
-          <label style="margin:0 0 4px 0;font-size:12px;font-weight:600;">Promo code</label>
+          <label for="promo-code-input" style="margin:0 0 4px 0;font-size:12px;font-weight:600;">Promo code</label>
           <div style="display:flex;gap:6px;">
             <input type="text" id="promo-code-input" placeholder="e.g. DISCOUNT10" maxlength="20" style="text-transform:uppercase;flex:1;">
             <button type="button" id="apply-promo-btn" class="button secondary small">Apply</button>
@@ -882,12 +1007,39 @@
         <label>Payment method
           <select id="payment-method">
             <option value="CASH">Cash · pay your driver</option>
+            <option value="WALLET">Nori Wallet · prepay with demo credits</option>
+            <option value="SSL_DEMO">SSLCOMMERZ · demo prepayment</option>
             ${config.cardPayments ? '<option value="CARD">Card · pay after your trip</option>' : ''}
           </select>
         </label>
+        <p id="payment-hint" class="form-hint" aria-live="polite">Pay your driver in cash after the trip.</p>
+        <button type="button" id="booking-wallet-link" class="plain-link" hidden>Open Nori Wallet to top up →</button>
         <button id="request-ride" class="button full">${isSchedule ? 'Confirm scheduled ride' : 'Request a ride'} <span>→</span></button>
       </div>
     `;
+
+    $('#quote-result').setAttribute('tabindex', '-1');
+    $('#quote-result').focus({preventScroll:true});
+    $('#quote-result').scrollIntoView({block:'nearest', behavior:'smooth'});
+
+    $('#booking-wallet-link').addEventListener('click', () => changeTab('wallet').catch(error => toast(error.message, true)));
+    $('#payment-method').addEventListener('change', async () => {
+      const method = $('#payment-method').value;
+      const demo = isDemoMethod(method);
+      $('.promo-box').hidden = isSchedule || demo;
+      state.appliedPromo = null;
+      $('#promo-status').hidden = true;
+      $('#fare-amount-display').textContent = `${quote.currency} ${Number(quote.fare).toFixed(2)}`;
+      $('#booking-wallet-link').hidden = method !== 'WALLET';
+      $('#request-ride').textContent = demo ? (isSchedule ? 'Prepay & reserve · demo →' : 'Prepay & request ride · demo →') : (isSchedule ? 'Confirm scheduled ride →' : 'Request a ride →');
+      $('#payment-hint').textContent = method === 'SSL_DEMO' ? 'Demo bKash, Nagad, card, or bank checkout. Pay before booking; cancellations get a full simulated refund.' : method === 'WALLET' ? 'Pay before booking with Nori Wallet demo credits. Checking balance…' : method === 'CASH' ? 'Pay your driver in cash after the trip.' : 'Pay by card after your trip.';
+      if (method === 'WALLET') {
+        try {
+          const wallet = await api('payments/wallet/');
+          if ($('#payment-method')?.value === 'WALLET' && state.quote?.id === quote.id) $('#payment-hint').textContent = `Demo balance: ${wallet.currency} ${Number(wallet.balance).toFixed(2)}. ${wallet.currency !== quote.currency ? 'Wallet currency does not match this fare.' : Number(wallet.balance) < Number(quote.fare) ? 'Top up before confirming this ride.' : 'Your fare will be deducted when you confirm.'} Cancelled bookings receive a full demo refund.`;
+        } catch (error) { if ($('#payment-method')?.value === 'WALLET') $('#payment-hint').textContent = error.message; }
+      }
+    });
 
     $('#apply-promo-btn')?.addEventListener('click', event => busy(event.currentTarget, async () => {
       const code = $('#promo-code-input')?.value?.trim().toUpperCase();
@@ -924,16 +1076,22 @@
       if (!state.quote) throw new Error('Get a new fare estimate first.');
       const currentIsSchedule = $('#booking-type-select')?.value === 'SCHEDULE';
       const paymentMethod = $('#payment-method').value;
+      const quoteId = state.quote.id;
+      const version = state.quoteVersion;
+      const scheduledFor = currentIsSchedule ? validateScheduleInput(scheduleInput) : null;
+      const payload = {quote_id:quoteId, payment_method:paymentMethod,
+        ...(currentIsSchedule ? {scheduled_for:scheduledFor} : {request_id:state.requestId, promo_code:state.appliedPromo || undefined})};
+      let booked;
+      const submitBooking = async demo => {
+        if (!state.quote || state.quote.id !== quoteId || state.quoteVersion !== version) throw new Error('Your booking changed. Close checkout and get a fresh fare.');
+        booked = await api(currentIsSchedule ? 'rides/schedule/' : 'rides/', {method:'POST', data:{...payload, ...demo}});
+      };
+      if (paymentMethod === 'SSL_DEMO') {
+        const done = await demoCheckout({amount:state.quote.fare, currency:state.quote.currency,
+          purpose:currentIsSchedule ? 'Prepay your Nori reservation' : 'Prepay your Nori ride'}, submitBooking);
+        if (!done) return;
+      } else await submitBooking({});
       if (currentIsSchedule) {
-        const scheduledFor = validateScheduleInput(scheduleInput);
-        await api('rides/schedule/', {
-          method: 'POST',
-          data: {
-            quote_id: state.quote.id,
-            payment_method: paymentMethod,
-            scheduled_for: scheduledFor
-          }
-        });
         state.quote = null;
         $('#quote-result').hidden = true;
         $('#history-filters').reset();
@@ -943,15 +1101,7 @@
         toast('Ride scheduled successfully! View it in My trips.');
         await changeTab('history');
       } else {
-        state.selected = await api('rides/', {
-          method: 'POST',
-          data: {
-            quote_id: state.quote.id,
-            request_id: state.requestId,
-            payment_method: paymentMethod,
-            promo_code: state.appliedPromo || undefined
-          }
-        });
+        state.selected = booked;
         state.quote = null;
         $('#quote-result').hidden = true;
         toast('Finding a nearby driver for you.');
@@ -1024,7 +1174,36 @@
       const dropdown = $(`#${kind}-places`);
       if (!input || !dropdown) return;
 
-      let timer, controller, searchVersion = 0;
+      input.setAttribute('role', 'combobox');
+      input.setAttribute('aria-autocomplete', 'list');
+      input.setAttribute('aria-controls', dropdown.id);
+      input.setAttribute('aria-expanded', 'false');
+      dropdown.setAttribute('role', 'listbox');
+      dropdown.setAttribute('aria-label', `${kind} suggestions`);
+      let timer, controller, searchVersion = 0, activeIndex = -1;
+      const collapse = () => {
+        dropdown.hidden = true; activeIndex = -1;
+        input.setAttribute('aria-expanded', 'false');
+        input.removeAttribute('aria-activedescendant');
+      };
+      new MutationObserver(() => {
+        input.setAttribute('aria-expanded', String(!dropdown.hidden));
+        if (dropdown.hidden) input.removeAttribute('aria-activedescendant');
+      }).observe(dropdown, {attributes:true, attributeFilter:['hidden']});
+      input.addEventListener('keydown', event => {
+        if (event.key === 'Escape') { clearTimeout(timer); controller?.abort(); ++searchVersion; collapse(); return; }
+        const options = [...dropdown.querySelectorAll('button.place-item')];
+        if (dropdown.hidden || !options.length) return;
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+          event.preventDefault();
+          activeIndex = activeIndex < 0 ? (event.key === 'ArrowDown' ? 0 : options.length - 1) : (activeIndex + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length;
+          options.forEach((option, index) => option.setAttribute('aria-selected', String(index === activeIndex)));
+          input.setAttribute('aria-activedescendant', options[activeIndex].id);
+          options[activeIndex].scrollIntoView({block:'nearest'});
+        } else if (event.key === 'Enter' && activeIndex >= 0) {
+          event.preventDefault(); options[activeIndex].click();
+        } else if (event.key === 'Tab') collapse();
+      });
       async function search(q = '') {
         controller?.abort();
         controller = new AbortController();
@@ -1037,8 +1216,10 @@
             dropdown.hidden = false;
             return;
           }
-          dropdown.innerHTML = places.map(p => `
-            <button type="button" class="place-item" data-label="${esc(p.label)}" data-address="${esc(p.address)}" data-lat="${p.latitude}" data-lon="${p.longitude}">
+          activeIndex = -1;
+          input.removeAttribute('aria-activedescendant');
+          dropdown.innerHTML = places.map((p, index) => `
+            <button type="button" class="place-item" role="option" tabindex="-1" aria-selected="false" id="${kind}-option-${index}" data-label="${esc(p.label)}" data-address="${esc(p.address)}" data-lat="${p.latitude}" data-lon="${p.longitude}">
               <span class="place-name">${esc(p.label)}</span>
               <span class="place-address">${esc(p.address)}</span>
               ${p.category ? `<span class="place-tag">${esc(p.category)}</span>` : ''}
@@ -1051,7 +1232,7 @@
               e.preventDefault();
               e.stopPropagation();
               choosePoint(kind, btn.dataset.lat, btn.dataset.lon, btn.dataset.label);
-              dropdown.hidden = true;
+              collapse();
               if (kind === 'pickup' && !$('#destination-label')?.value) {
                 $('#destination-label')?.focus();
               }
@@ -1064,6 +1245,7 @@
 
       input.addEventListener('focus', () => search(input.value.trim()));
       input.addEventListener('input', () => {
+        collapse();
         clearTimeout(timer);
         controller?.abort();
         ++searchVersion;
@@ -1087,6 +1269,16 @@
 
   async function start() {
     setupMap(); setupPlaceSearch(); connect();
+    if (config.user.role === 'RIDER') {
+      const params = new URLSearchParams(location.search);
+      const vehicle = params.get('vehicle');
+      if (Object.hasOwn(vehicleDescriptions, vehicle)) $('#vehicle-class').value = vehicle;
+      syncVehicleChoice();
+      if (params.get('when') === 'later') {
+        bookingTypeSelect.value = 'SCHEDULE';
+        bookingTypeSelect.dispatchEvent(new Event('change'));
+      }
+    }
     setInterval(() => { if (!document.hidden) sync().catch(() => { $('#connection-status').textContent = 'Connection interrupted. Retrying…'; }); }, 8000);
     setInterval(() => { if (state.socket?.readyState === WebSocket.OPEN) state.socket.send(JSON.stringify({type:'ping'})); }, 30000);
     await sync();

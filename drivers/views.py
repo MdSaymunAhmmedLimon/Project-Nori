@@ -102,7 +102,7 @@ class EarningsView(APIView):
         qs = Payment.objects.filter(
             ride__driver=request.user,
             ride__status="COMPLETED",
-        )
+        ).exclude(method__in=["WALLET", "SSL_DEMO"])
 
         # Optional date range filters
         date_from = request.query_params.get("date_from")
@@ -135,7 +135,7 @@ class EarningsView(APIView):
         )
 
         from rides.models import RideTip
-        tips_total = float(RideTip.objects.filter(ride__driver=request.user).aggregate(total=Sum("amount"))["total"] or 0)
+        tips_total = float(RideTip.objects.filter(ride__driver=request.user).exclude(ride__payment_method__in=["WALLET", "SSL_DEMO"]).aggregate(total=Sum("amount"))["total"] or 0)
 
         return Response({
             "total_revenue": f"{float(total_revenue):.2f}",

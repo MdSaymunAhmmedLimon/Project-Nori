@@ -40,7 +40,10 @@ class WebLoginView(LoginView):
 
 
 def home(request):
-    return render(request, "webapp/home.html")
+    return render(request, "webapp/home.html", {"public_map": {
+        "tileUrl": settings.MAP_TILE_URL, "attribution": settings.MAP_ATTRIBUTION,
+        "latitude": settings.MAP_CENTER_LATITUDE, "longitude": settings.MAP_CENTER_LONGITUDE,
+    }})
 
 
 @require_http_methods(["GET", "POST"])
@@ -128,7 +131,7 @@ def operations(request):
     completed_count = ride_counts["completed"]
     pending_count = driver_counts["pending"]
     recent_rides = Ride.objects.select_related("rider", "driver", "quote")[:20]
-    revenue = Payment.objects.filter(status="PAID").values("currency").annotate(gross=Sum("amount"), fees=Sum("platform_fee"))
+    revenue = Payment.objects.filter(status="PAID").exclude(method__in=["WALLET", "SSL_DEMO"]).values("currency").annotate(gross=Sum("amount"), fees=Sum("platform_fee"))
 
     # NEW: SOS Alerts
     sos_alerts = SOSAlert.objects.select_related("ride__rider", "ride__driver", "raised_by").order_by("-created_at")[:20]
@@ -142,7 +145,7 @@ def operations(request):
     # NEW: Revenue analytics (last 30 days daily breakdown)
     thirty_days_ago = timezone.now() - datetime.timedelta(days=30)
     daily_revenue = list(
-        Payment.objects.filter(status="PAID", created_at__gte=thirty_days_ago)
+        Payment.objects.filter(status="PAID", created_at__gte=thirty_days_ago).exclude(method__in=["WALLET", "SSL_DEMO"])
         .annotate(date=TruncDate("created_at"))
         .values("date")
         .annotate(

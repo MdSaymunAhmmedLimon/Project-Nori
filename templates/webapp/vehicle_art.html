@@ -1,0 +1,17 @@
+<svg class="vehicle-art vehicle-{{ kind|default:'STANDARD'|lower }}" viewBox="0 0 160 88" fill="none" aria-hidden="true" focusable="false">
+  <ellipse cx="81" cy="74" rx="65" ry="6" fill="#153e35" opacity=".09"/>
+  {% if kind == 'MOTO' %}
+  <circle cx="39" cy="59" r="19" fill="#263833"/><circle cx="39" cy="59" r="11" fill="#c5d2cf"/><circle cx="121" cy="59" r="19" fill="#263833"/><circle cx="121" cy="59" r="11" fill="#c5d2cf"/>
+  <path d="m39 59 23-28 27 28H39Zm49 0 18-29 15 29M100 17h10l7 15" stroke="#315c4f" stroke-width="7" stroke-linejoin="round"/>
+  <path d="M55 29h33l12 13H64Z" fill="#51977a"/><path d="M47 25h29" stroke="#1c3029" stroke-width="7" stroke-linecap="round"/><path d="m96 25 10-9 6 12" fill="#b7d8b0"/>
+  {% else %}
+  <path d="M15 46 32 39 48 18h53l24 22 19 7 4 17H12Z" fill="{% if kind == 'COMFORT' %}#2e4b42{% elif kind == 'XL' %}#b4c9be{% else %}#e2e9e6{% endif %}" stroke="#719083" stroke-width="1.5"/>
+  <path d="m39 39 13-16h23v16H39Zm42 0V23h17l19 16H81Z" fill="#789c99"/>
+  <path d="m55 25 17 0-17 12H44Zm29 0h8l-8 8Z" fill="#c8deda" opacity=".7"/>
+  <path d="M15 49h19l-4 7H13m115-11 15 6v5h-13" fill="#fffdf0"/>
+  <path d="M77 42v20M46 44v17M85 45h9M53 45h8M16 64h128" stroke="#719083" stroke-width="1.5"/>
+  <circle cx="40" cy="63" r="14" fill="#24352f"/><circle cx="40" cy="63" r="7" fill="#cbd6d1"/><circle cx="121" cy="63" r="14" fill="#24352f"/><circle cx="121" cy="63" r="7" fill="#cbd6d1"/>
+  <path d="M37 63h6m-3-3v6m78-3h6m-3-3v6" stroke="#6e8178" stroke-width="2"/>
+  {% if kind == 'XL' %}<path d="M47 14h52" stroke="#6b8879" stroke-width="4" stroke-linecap="round"/>{% endif %}
+  {% endif %}
+</svg>

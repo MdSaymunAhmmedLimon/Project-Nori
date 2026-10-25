@@ -1,22 +1,40 @@
-{% extends 'webapp/base.html' %}
+{% extends 'webapp/base.html' %}{% load static %}
+{% block head %}<link rel="stylesheet" href="{% static 'vendor/leaflet/leaflet.css' %}">{% endblock %}
+{% block body_class %}home-page{% endblock %}
 {% block content %}
-<section class="hero wrap">
+<section class="hero wrap{% if user.is_authenticated %} hero-with-riders{% endif %}">
   <div class="hero-copy">
-    <div class="eyebrow"><span class="status-dot"></span> YOUR EVERYDAY, IN MOTION</div>
-    <h1>Your city.<br>Your next <em>move.</em></h1>
-    <p class="hero-description">Whether it's your morning commute, a late-night ride, or a spontaneous adventure — Nori connects you with a trusted driver in minutes.</p>
-    <div class="hero-actions"><a class="button large" href="{% url 'webapp:register' %}">Find your ride <span aria-hidden="true">↗</span></a><a class="plain-link" href="{% url 'webapp:register' %}?role=driver">Drive with Nori <span aria-hidden="true">→</span></a></div>
-    <div class="hero-notes"><span>{% include 'webapp/icon.html' with name='wallet' %} Upfront fares</span><span>{% include 'webapp/icon.html' with name='pin' %} Live trip updates</span><span>{% include 'webapp/icon.html' with name='shield' %} Private journeys</span></div>
+    <div class="eyebrow"><span class="status-dot"></span> A BETTER WAY TO GO</div>
+    <h1>Life moves.<br><em>Go with Nori.</em></h1>
+    <p class="hero-description">The office. The airport. Your favourite people.<br>Wherever life takes you, find a ride that fits.</p>
+    <div class="home-booking-card">
+      <div class="home-booking-title">{% include 'webapp/icon.html' with name='ride' %}<strong>Your next ride starts here</strong></div>
+      <a class="destination-prompt" href="{% url 'webapp:dashboard' %}"><span class="location-dot destination"></span><span>Where are you going?</span>{% include 'webapp/icon.html' with name='arrow' %}</a>
+      <div class="hero-actions"><a class="button" href="{% url 'webapp:dashboard' %}">Find a ride {% include 'webapp/icon.html' with name='arrow' %}</a><a class="reserve-link" href="{% url 'webapp:dashboard' %}?when=later">{% include 'webapp/icon.html' with name='history' %} Schedule for later</a></div>
+      <p class="home-booking-hint">Choose your route. Review your fare. Then confirm.</p>
+    </div>
+    <div class="hero-notes"><span>{% include 'webapp/icon.html' with name='wallet' %} Upfront fares</span><span>{% include 'webapp/icon.html' with name='shield' %} Private rides</span><span>{% include 'webapp/icon.html' with name='pin' %} Trip sharing</span></div>
   </div>
-  <div class="city-art" aria-label="Illustration of a ride through the city" role="img">
-    <div class="city-grid"></div><div class="park park-one"></div><div class="park park-two"></div><div class="river"></div>
-    <svg class="route-art" viewBox="0 0 520 480" aria-hidden="true"><path d="M110 360 V250 Q110 220 140 220 H335 Q365 220 365 190 V110" fill="none" stroke="#fff" stroke-width="19" stroke-linecap="round"/><path d="M110 360 V250 Q110 220 140 220 H335 Q365 220 365 190 V110" fill="none" stroke="#16493f" stroke-width="7" stroke-dasharray="2 0" stroke-linecap="round"/><circle cx="110" cy="360" r="12" fill="#cce99b" stroke="#16493f" stroke-width="5"/><circle cx="365" cy="110" r="12" fill="#16493f" stroke="white" stroke-width="5"/></svg>
-    <div class="map-label map-label-one">A little closer<br><strong>to where you want to be.</strong></div>
-    <div class="illustration-car" aria-hidden="true">{% include 'webapp/icon.html' with name='ride' %}</div><div class="destination-tag">Your next chapter <span>●</span></div>
-    <div class="floating-trip"><span class="trip-icon">↗</span><div><strong>Let's get you there.</strong><small>A good journey starts here.</small></div><span class="floating-arrow">→</span></div>
+  <div class="home-map-shell">
+    <div id="home-map" aria-label="Map of the city"></div>
+    <div class="home-map-label">{% include 'webapp/icon.html' with name='pin' %}<span>Your city.<strong>So many possibilities.</strong></span></div>
+    <div class="home-map-card"><div class="home-map-vehicle">{% include 'webapp/vehicle_art.html' with kind='STANDARD' %}</div><div><span class="eyebrow">MAKE IT YOUR JOURNEY</span><strong>A ride for your everyday.</strong><small>Car or Moto. Now or later.</small></div><a href="{% url 'webapp:dashboard' %}" aria-label="Plan a ride">{% include 'webapp/icon.html' with name='arrow' %}</a></div>
+    <span id="home-map-status" role="status" class="home-map-status" hidden>Map unavailable. You can still plan your ride.</span>
+  </div>
+  {% if user.is_authenticated %}{% include 'webapp/top_riders.html' %}{% endif %}
+</section>
+<section class="services-section wrap" aria-labelledby="services-title">
+  <div class="section-heading"><div><div class="eyebrow">ONE CITY. YOUR KIND OF RIDE.</div><h2 id="services-title">A little more you.</h2></div><p>Different plans. The same easy start.</p></div>
+  <div class="service-grid">
+    <a class="service-card" href="{% url 'webapp:dashboard' %}?vehicle=STANDARD"><span class="service-tag">THE EVERYDAY GO-TO</span>{% include 'webapp/vehicle_art.html' with kind='STANDARD' %}<h3>Nori Car <span>↗</span></h3><p>A private sedan for your daily plans.</p></a>
+    <a class="service-card" href="{% url 'webapp:dashboard' %}?vehicle=MOTO"><span class="service-tag">TRAVEL LIGHT</span>{% include 'webapp/vehicle_art.html' with kind='MOTO' %}<h3>Nori Moto <span>↗</span></h3><p>Two wheels. One easy way across town.</p></a>
+    <a class="service-card" href="{% url 'webapp:dashboard' %}?vehicle=COMFORT"><span class="service-tag">A LITTLE EXTRA COMFORT</span>{% include 'webapp/vehicle_art.html' with kind='COMFORT' %}<h3>Comfort <span>↗</span></h3><p>Upgrade your everyday journey.</p></a>
+    <a class="service-card" href="{% url 'webapp:dashboard' %}?vehicle=XL"><span class="service-tag">ROOM TO UNWIND</span>{% include 'webapp/vehicle_art.html' with kind='XL' %}<h3>Nori XL <span>↗</span></h3><p>A larger ride with space to settle in.</p></a>
   </div>
 </section>
-<section class="feature-strip wrap" aria-label="How it works"><div><span class="step-number">01</span><h2>Pick your place</h2><p>Set your pickup and destination on the map.</p></div><div><span class="step-number">02</span><h2>Know your fare</h2><p>See your price before you request a ride.</p></div><div><span class="step-number">03</span><h2>You're on your way</h2><p>Match with a nearby driver and follow your trip.</p></div></section>
+<section class="home-confidence wrap"><div class="confidence-icon">{% include 'webapp/icon.html' with name='shield' %}</div><div><div class="eyebrow">THOUGHTFUL FROM PICKUP TO DROP-OFF</div><h2>A little peace of mind goes a long way.</h2><p>Know your driver and vehicle, share your live trip, and keep trusted contacts close. Your safety tools travel with you.</p></div><a class="button secondary" href="{% url 'webapp:dashboard' %}">Get started {% include 'webapp/icon.html' with name='arrow' %}</a></section>
 <section class="driver-banner wrap"><div><div class="eyebrow">TAKE THE WHEEL</div><h2>Your time. Your route.<br>A new way to earn.</h2><p>Create your driver profile and make your next move.</p></div><a class="button light" href="{% url 'webapp:register' %}?role=driver">Become a driver <span aria-hidden="true">↗</span></a></section>
-<footer class="wrap footer"><span>nori. &nbsp; A better way to go.</span><span>© 2026 Nori. Built for everyday journeys.</span></footer>
+<footer class="wrap footer"><a class="brand" href="{% url 'webapp:home' %}">nori.</a><span>© 2026 Nori. Built for everyday journeys.</span><a href="{% url 'webapp:login' %}">Your account ↗</a></footer>
+{{ public_map|json_script:"public-map-config" }}
 {% endblock %}
+{% block scripts %}<script src="{% static 'vendor/leaflet/leaflet.js' %}" defer></script><script src="{% static 'webapp/home.js' %}" defer></script>{% endblock %}

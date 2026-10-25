@@ -37,6 +37,14 @@ The launcher creates the project virtual environment, installs dependencies if
 needed, prepares the local database, and serves the app at
 `http://127.0.0.1:8000/`. Local development uses separate settings from Vercel.
 
+## Demo wallet and prepayments
+
+Riders can open **Nori Wallet** to add simulated credits through the local
+SSLCOMMERZ demo checkout. Wallet and direct demo prepayments work for immediate
+rides and advance bookings. Cancelled demo bookings are refunded, and completed
+trips support star ratings and feedback tags. No payment credentials or real
+money are involved. See [demo payment behavior and API](docs/DEMO_PAYMENTS.md).
+
 ## Checks
 
 ```powershell

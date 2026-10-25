@@ -44,6 +44,8 @@ class Ride(models.Model):
     class PaymentMethod(models.TextChoices):
         CASH = "CASH", "Cash"
         CARD = "CARD", "Card"
+        WALLET = "WALLET", "Nori Wallet (demo)"
+        SSL_DEMO = "SSL_DEMO", "SSLCOMMERZ (demo)"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     rider = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="rider_rides")
@@ -51,7 +53,7 @@ class Ride(models.Model):
     quote = models.OneToOneField(RideQuote, on_delete=models.PROTECT)
     request_id = models.UUIDField()
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.REQUESTED, db_index=True)
-    payment_method = models.CharField(max_length=4, choices=PaymentMethod.choices, default=PaymentMethod.CASH)
+    payment_method = models.CharField(max_length=10, choices=PaymentMethod.choices, default=PaymentMethod.CASH)
     cancellation_fee = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
     cancellation_reason = models.CharField(max_length=300, blank=True)
     verification_pin = models.CharField(max_length=4, blank=True)
@@ -206,7 +208,7 @@ class ScheduledRide(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     rider = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="scheduled_rides")
     quote = models.ForeignKey(RideQuote, on_delete=models.CASCADE)
-    payment_method = models.CharField(max_length=4, choices=Ride.PaymentMethod.choices, default=Ride.PaymentMethod.CASH)
+    payment_method = models.CharField(max_length=10, choices=Ride.PaymentMethod.choices, default=Ride.PaymentMethod.CASH)
     scheduled_for = models.DateTimeField(db_index=True)
     ride = models.OneToOneField(Ride, null=True, blank=True, on_delete=models.SET_NULL, related_name="from_scheduled")
     cancelled_at = models.DateTimeField(null=True, blank=True)
