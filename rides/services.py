@@ -16,12 +16,12 @@ from drivers.models import DriverProfile
 from notifications.services import notify, publish
 
 from .geo import distance_km, money
+from .routing import RoutingUnavailable, get_pickup_distances, get_road_route
 from .models import (
-    ACTIVE_STATUSES, ASSIGNED_STATUSES, Badge, CarpoolPassenger, CarpoolRide,
-    FavouriteDriver, LostItem, LoyaltyPoints, PriceLock, PromoCode, PromoUsage,
+    ACTIVE_STATUSES, ASSIGNED_STATUSES, CarpoolPassenger, CarpoolRide,
+    PromoCode, PromoUsage,
     Rating, Ride, RideEvent, RideMessage, RideOffer, RideQuote, RideStop, RideTip,
     SavedPlace, ScheduledRide, SOSAlert, SurgePricingRule, TripShareToken,
-    UserBadge,
 )
 
 
@@ -68,6 +68,7 @@ def require_role(user, role):
 
 def create_quote(user, data):
     require_role(user, "RIDER")
+    data = data.copy()
     stops = data.pop("stops", [])
     vehicle_class = data.pop("vehicle_class", "STANDARD")
 
@@ -80,18 +81,25 @@ def create_quote(user, data):
         distance_km(coords[i][0], coords[i][1], coords[i + 1][0], coords[i + 1][1])
         for i in range(len(coords) - 1)
     )
-    if direct < 0.1 or direct > 300:
+    if direct == 0 or direct > 300:
         raise ValidationError({"detail": "Choose locations between 100 metres and 300 km apart."})
+
+    route = get_road_route(coords)
+    road_km = Decimal(str(route["distance_meters"])) / 1000
+    if road_km < Decimal("0.1") or road_km > 300:
+        raise ValidationError({"detail": "Choose a road route between 100 metres and 300 km long."})
 
     surge = get_active_surge_multiplier()
     class_multiplier = getattr(settings, "VEHICLE_CLASS_MULTIPLIERS", {}).get(vehicle_class, Decimal("1.00"))
 
-    estimated = money(Decimal(str(direct)) * Decimal(settings.FARE_ROAD_FACTOR))
+    estimated = money(road_km)
     base_fare = max(Decimal(settings.FARE_MINIMUM), Decimal(settings.FARE_BASE) + estimated * Decimal(settings.FARE_PER_KM))
     fare = money(base_fare * surge * class_multiplier)
 
     quote = RideQuote.objects.create(
-        rider=user, **data, distance_km=estimated, estimated_minutes=max(1, math.ceil(float(estimated) / 25 * 60)),
+        rider=user, **data, distance_km=estimated,
+        estimated_minutes=max(1, math.ceil(route["duration_seconds"] / 60)),
+        route_geometry=route["geometry"],
         fare=fare, platform_fee=money(fare * Decimal(settings.PLATFORM_FEE_PERCENT) / 100),
         currency=settings.RIDE_CURRENCY, expires_at=timezone.now() + timedelta(minutes=10),
         surge_multiplier=surge, vehicle_class=vehicle_class,
@@ -233,7 +241,19 @@ def dispatch_ride(ride_id):
         distance = distance_km(ride.quote.pickup_latitude, ride.quote.pickup_longitude, latitude, longitude)
         if distance <= settings.MATCH_RADIUS_KM:
             nearby.append((distance, driver_id))
-    for distance, driver_id in sorted(nearby)[:available_slots]:
+    candidate_ids = [driver_id for _, driver_id in sorted(nearby)]
+    locations = {driver_id: (lat, lon) for driver_id, lat, lon in candidates}
+    try:
+        road_distances = get_pickup_distances(
+            [locations[driver_id] for driver_id in candidate_ids],
+            (ride.quote.pickup_latitude, ride.quote.pickup_longitude),
+        )
+    except RoutingUnavailable:
+        # Keep the paid booking searching; the next dispatch poll retries routing.
+        return
+    reachable = [(distance, driver_id) for driver_id, distance in zip(candidate_ids, road_distances)
+                 if distance is not None and distance <= settings.MATCH_RADIUS_KM]
+    for distance, driver_id in sorted(reachable)[:available_slots]:
         offer, created = RideOffer.objects.get_or_create(
             ride=ride, driver_id=driver_id,
             defaults={"distance_km": money(distance), "expires_at": timezone.now() + timedelta(seconds=settings.OFFER_TIMEOUT_SECONDS)},
@@ -284,8 +304,58 @@ def reject_offer(user, offer_id):
         offer.save(update_fields=["rejected_at"])
 
 
+def cancellation_fee_for(user, ride):
+    from payments.models import DEMO_METHODS
+    if user.pk == ride.rider_id and ride.driver_id is not None and ride.payment_method not in DEMO_METHODS:
+        grace = getattr(settings, "CANCELLATION_GRACE_SECONDS", 120)
+        passed_grace = ride.accepted_at and (timezone.now() - ride.accepted_at).total_seconds() > grace
+        if ride.status == Ride.Status.DRIVER_ARRIVED or passed_grace:
+            return Decimal(str(getattr(settings, "RIDE_CANCELLATION_FEE", "50.00")))
+    return Decimal("0.00")
+
+
+def cancellation_preview(user, ride_id):
+    ride = Ride.objects.select_related("quote").filter(pk=ride_id).first()
+    if not ride or user.pk not in {ride.rider_id, ride.driver_id}:
+        raise NotFound()
+    if ride.status not in ACTIVE_STATUSES or ride.status == Ride.Status.IN_PROGRESS:
+        raise Conflict("This ride can no longer be cancelled.")
+    from payments.models import DEMO_METHODS
+    return {"ride_id": str(ride.pk), "fee": str(cancellation_fee_for(user, ride)), "currency": ride.quote.currency,
+        "refund_note": "Any demo prepayment is returned to your Nori Wallet." if ride.payment_method in DEMO_METHODS else "No trip fare is collected for this cancelled ride. A cancellation fee may apply.", "status": ride.status}
+
+
 @transaction.atomic
-def transition_ride(user, ride_id, action, reason=""):
+def cancel_operational_ride(user, ride_id, *, reason):
+    if not user.is_active or not user.has_perm("accounts.cancel_operational_ride"):
+        raise PermissionDenied("You do not have permission to cancel trips.")
+    if not reason.strip() or len(reason) > 250:
+        raise ValidationError("Provide a cancellation reason of at most 250 characters.")
+    driver_id = Ride.objects.filter(pk=ride_id).values_list("driver_id", flat=True).first()
+    if driver_id:
+        DriverProfile.objects.select_for_update().filter(user_id=driver_id).first()
+    ride = Ride.objects.select_for_update().select_related("quote").filter(pk=ride_id).first()
+    if not ride:
+        raise NotFound()
+    if ride.status == "CANCELLED" and ride.cancelled_by_id == user.pk:
+        return ride
+    if ride.status not in ACTIVE_STATUSES or ride.status == Ride.Status.IN_PROGRESS:
+        raise Conflict("Only trips that have not started can be cancelled. Handle an in-progress trip through safety support.")
+    from payments.demo import refund_quote
+    refund_quote(ride.quote_id)
+    ride.cancelled_at, ride.cancelled_by = timezone.now(), user
+    ride.cancellation_fee = Decimal("0.00")
+    ride.cancellation_reason = "Cancelled by support: " + reason.strip()
+    record_status(ride, Ride.Status.CANCELLED, ride.cancellation_reason)
+    for driver_id in ride.offers.values_list("driver_id", flat=True):
+        publish(driver_id, "offers_changed")
+    from drivers.review import audit
+    audit(user, ride, ride.cancellation_reason)
+    return ride
+
+
+@transaction.atomic
+def transition_ride(user, ride_id, action, reason="", expected_cancellation_fee=None):
     if user.role == "DRIVER":
         if not DriverProfile.objects.select_for_update().filter(user=user).first():
             raise NotFound()
@@ -298,28 +368,25 @@ def transition_ride(user, ride_id, action, reason=""):
         if ride.status not in ACTIVE_STATUSES or ride.status == Ride.Status.IN_PROGRESS:
             raise Conflict("This ride can no longer be cancelled.")
 
-        fee = Decimal("0.00")
+        fee = cancellation_fee_for(user, ride)
+        if expected_cancellation_fee is not None and expected_cancellation_fee != fee:
+            raise Conflict("The cancellation fee changed. Close the dialog and review cancellation again before confirming.")
         from payments.demo import refund_quote
-        from payments.models import DEMO_METHODS
-        if user.pk == ride.rider_id and ride.driver_id is not None and ride.payment_method not in DEMO_METHODS:
-            grace_seconds = getattr(settings, "CANCELLATION_GRACE_SECONDS", 120)
-            passed_grace = ride.accepted_at and (timezone.now() - ride.accepted_at).total_seconds() > grace_seconds
-            if ride.status == Ride.Status.DRIVER_ARRIVED or passed_grace:
-                fee = Decimal(str(getattr(settings, "RIDE_CANCELLATION_FEE", "50.00")))
-                ride.cancellation_fee = fee
-                from payments.models import Payment
-                Payment.objects.get_or_create(ride=ride, defaults={
-                    "amount": fee, "platform_fee": Decimal("0.00"),
-                    "currency": ride.quote.currency, "method": ride.payment_method,
-                })
+        ride.cancellation_fee = fee
+        if fee > 0:
+            from payments.models import Payment
+            Payment.objects.get_or_create(ride=ride, defaults={
+                "amount": fee, "platform_fee": Decimal("0.00"),
+                "currency": ride.quote.currency, "method": ride.payment_method,
+            })
 
         refund_quote(ride.quote_id)
         ride.cancelled_at, ride.cancelled_by = timezone.now(), user
         cancel_msg = reason.strip()
         if fee > 0:
             cancel_msg = (cancel_msg + f" (Cancellation fee of {fee} {ride.quote.currency} applied)").strip()
-        ride.cancellation_reason = cancel_msg
-        record_status(ride, Ride.Status.CANCELLED)
+        ride.cancellation_reason = cancel_msg[:300]
+        record_status(ride, Ride.Status.CANCELLED, f"Ride cancelled by {'rider' if user.pk == ride.rider_id else 'driver'}. {ride.cancellation_reason}")
         for driver_id in ride.offers.values_list("driver_id", flat=True):
             publish(driver_id, "offers_changed")
         return ride
@@ -445,7 +512,7 @@ def raise_sos(user, ride_id, message=""):
 
 def resolve_sos(admin_user, alert_id):
     """Mark an SOS alert as resolved. Staff only."""
-    if not admin_user.is_staff:
+    if not admin_user.is_active or not admin_user.has_perm("rides.change_sosalert"):
         raise PermissionDenied("Only staff can resolve SOS alerts.")
     alert = SOSAlert.objects.filter(pk=alert_id, resolved_at__isnull=True).first()
     if not alert:
@@ -719,8 +786,8 @@ def send_ride_message(user, ride_id, content):
     ride = Ride.objects.select_for_update().filter(pk=ride_id).first()
     if not ride or user.pk not in {ride.rider_id, ride.driver_id}:
         raise NotFound("Ride not found.")
-    if ride.status not in ACTIVE_STATUSES:
-        raise Conflict("Chat is only available during an active ride.")
+    if ride.status not in ASSIGNED_STATUSES or not ride.driver_id:
+        raise Conflict("Messaging is available after a driver accepts and until the ride ends.")
 
     content = content.strip()
     if not content:
@@ -807,9 +874,9 @@ def get_ride_eta(user, ride_id):
         target_lat = ride.quote.destination_latitude
         target_lon = ride.quote.destination_longitude
 
-    rem_direct = distance_km(profile.latitude, profile.longitude, target_lat, target_lon)
-    rem_km = money(Decimal(str(rem_direct)) * Decimal(settings.FARE_ROAD_FACTOR))
-    eta_mins = max(1, math.ceil(float(rem_km) / 25 * 60))
+    route = get_road_route([(profile.latitude, profile.longitude), (target_lat, target_lon)])
+    rem_km = money(Decimal(str(route["distance_meters"])) / 1000)
+    eta_mins = max(1, math.ceil(route["duration_seconds"] / 60))
 
     return {
         "estimated_minutes": eta_mins,

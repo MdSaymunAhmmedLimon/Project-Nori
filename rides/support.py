@@ -58,7 +58,7 @@ def report_lost_item(user, ride_id, description):
 
 @transaction.atomic
 def update_lost_item(user, report_id, *, status, admin_note):
-    if not user.is_staff or not user.has_perm("rides.change_lostitem"):
+    if not user.is_active or not user.has_perm("rides.change_lostitem"):
         raise PermissionDenied("You do not have permission to manage lost-item reports.")
     if status not in LostItem.Status.values:
         raise ValidationError({"status": "Choose a valid report status."})

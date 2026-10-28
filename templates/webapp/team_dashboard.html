@@ -1,0 +1,10 @@
+{% extends 'webapp/base.html' %}
+{% block title %}{{ position.invitation.category_name }} dashboard · Nori{% endblock %}
+{% block robots %}noindex, nofollow{% endblock %}
+{% block content %}<section class="wrap operations ops-dashboard">
+  <div class="page-heading"><div><div class="eyebrow">{{ position.invitation.get_dashboard_display|upper }} WORKSPACE</div><h1>Welcome, {{ user.first_name|default:user.username }}.</h1><p class="heading-description">{{ position.invitation.category_name }} · Your assigned tools, all in one place.</p></div><span class="pill success">Approved position</span></div>
+  {% include 'webapp/operations_nav.html' %}
+  <div class="team-welcome"><div>{% include 'webapp/icon.html' with name='shield' %}<h2>{% if position.invitation.dashboard == 'MODERATOR' %}A safer journey starts with you.{% else %}Everything you need for your role.{% endif %}</h2><p>Review your queues, follow up thoughtfully, and keep every decision accountable.</p></div><a class="button light" href="{% url 'webapp:notification-center' %}">Open your inbox →</a></div>
+  <div class="ops-cards">{% for card in cards %}<a class="panel team-task" href="{{ card.url }}"><span class="eyebrow">{{ card.label }}</span><strong>{{ card.count }}</strong><p>{{ card.description }}</p><span class="plain-link">Open workspace →</span></a>{% empty %}<article class="panel"><h2>Your position is active</h2><p class="muted">Your available actions are listed in the navigation. Only the powers approved for your position are enabled.</p></article>{% endfor %}</div>
+  <article class="panel position-section"><h2>Your approved powers</h2><ul class="permission-list">{% for label in permission_labels %}<li>{% include 'webapp/icon.html' with name='shield' %}{{ label }}</li>{% empty %}<li>No administrative powers assigned.</li>{% endfor %}</ul><a class="plain-link" href="{% url 'webapp:position-detail' position.invitation_id %}">View your approval record →</a></article>
+</section>{% endblock %}

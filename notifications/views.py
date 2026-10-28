@@ -11,7 +11,7 @@ from .services import publish
 class NotificationSerializer(serializers.ModelSerializer):
     class Meta:
         model = Notification
-        fields = ("id", "message", "ride_id", "created_at", "read_at")
+        fields = ("id", "title", "category", "message", "action_url", "ride_id", "created_at", "read_at")
 
 
 class NotificationPagination(PageNumberPagination):
@@ -45,3 +45,12 @@ class NotificationSummary(APIView):
     def get(self, request):
         unread = Notification.objects.filter(user=request.user, read_at__isnull=True).count()
         return Response({"unread_count": unread})
+
+
+class MarkOneRead(APIView):
+    def post(self, request, pk):
+        from django.shortcuts import get_object_or_404
+        notification = get_object_or_404(Notification, pk=pk, user=request.user)
+        if Notification.objects.filter(pk=notification.pk, read_at__isnull=True).update(read_at=timezone.now()):
+            publish(request.user.pk, "notifications_read")
+        return Response({"detail": "Notification marked as read."})

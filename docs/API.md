@@ -66,11 +66,12 @@ their next event or ping. A JWT client must discard its tokens and log in with t
 new password. A browser using session authentication keeps its current session;
 other browser sessions become invalid.
 
-Browser password recovery starts at `/password/reset/`. The response does not
-reveal whether an email has an active account. Reset links expire after one hour
-and are single-use. A successful reset invalidates all prior sessions and API
-tokens. Local development prints recovery emails to the server console;
-deployments require SMTP settings and `PUBLIC_BASE_URL` (see README).
+Browser password recovery starts at `/password/reset/`. Enter your username,
+answer the security question configured on your account, and choose a new
+password. Accounts without a security question cannot use this recovery flow.
+A successful reset invalidates prior sessions and API tokens. Recovery does
+not send email or require SMTP configuration. SMTP is used for SOS alerts to
+the operations address configured by `ADMIN_EMAIL`.
 
 Example PowerShell registration/login; choose a unique username/email if repeating:
 
@@ -321,3 +322,46 @@ a pending summary instead. Only that trip's rider and assigned driver can access
 it; the driver's copy includes fee and net-earnings totals. Amounts come from the
 stored payment record. Private pages are marked `no-store` and cannot be changed
 with POST requests.
+
+## Notification and cancellation additions
+
+Notification list entries now include `title`, `category`, and a local `action_url`
+alongside the existing fields. `POST /api/notifications/{id}/read/` marks one of the
+authenticated user's messages read. The existing summary and mark-all endpoints
+remain unchanged; other users' messages return 404.
+
+`GET /api/rides/{uuid}/actions/` previews cancellation for a participant and returns
+`fee`, `currency`, `refund_note`, and current `status`. Confirm with
+`POST /api/rides/{uuid}/actions/` and
+`{"action":"cancel","reason":"Plans changed","expected_cancellation_fee":"0.00"}`.
+A changed fee or an un-cancellable status returns 409. Fees remain server-authoritative.
+
+Position management uses session-authenticated, CSRF-protected web forms under
+`/positions/`; it is not exposed as a public role-editing API. See
+[the workflow and permission model](POSITIONS.md).
+
+## Road routing endpoints
+
+Authenticated clients can `POST /api/rides/route/` with
+`{"coordinates":[{"latitude":"23.810300","longitude":"90.412500"},{"latitude":"23.780600","longitude":"90.419300"}]}`.
+Supply 2–10 locations in travel order. The response contains `distance_meters`,
+`duration_seconds`, and GeoJSON `geometry` (`LineString`, longitude/latitude order).
+Unreachable locations return HTTP 400; a routing outage returns HTTP 503.
+
+`POST /api/rides/quotes/` uses the road route for `distance_km`, `estimated_minutes`,
+and the fare, and returns the saved `route_geometry`. Up to eight intermediate
+`stops` are included in the route. No straight-line fare fallback is used.
+
+## Live device movement and messages
+
+Drivers send GPS coordinates to `POST /api/drivers/location/` at most once every
+five seconds while sharing from the web app. The assigned rider receives location
+events and can read the latest coordinates from their ride detail response. The
+blue device marker is local to the current browser; rider GPS is not uploaded.
+
+Participants can `GET /api/rides/{uuid}/messages/` to read the conversation and
+`POST` with `{"content":"I am at the entrance."}` to send a message. Sending is
+available from driver acceptance until the trip ends; completed/cancelled trips
+are read-only. Messages are limited to 500 characters. The recipient receives a
+`chat_message` websocket event, and the browser polls as a fallback. Nonparticipants
+receive 404, and sending before assignment or after the ride ends returns 409.

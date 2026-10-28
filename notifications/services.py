@@ -21,6 +21,11 @@ def publish(user_id, event="updated", **data):
     transaction.on_commit(send)
 
 
-def notify(user_id, message, ride_id=None):
-    Notification.objects.create(user_id=user_id, message=message, ride_id=ride_id)
+def notify(user_id, message, ride_id=None, *, title="", category=None, action_url="", sent_by=None):
+    if action_url and (not action_url.startswith("/") or action_url.startswith("//") or "\\" in action_url):
+        raise ValueError("Notification links must be local application paths.")
+    notification = Notification.objects.create(user_id=user_id, message=message[:250], ride_id=ride_id,
+        title=title[:100], category=category or ("RIDE" if ride_id else "SYSTEM"),
+        action_url=action_url or (f"/app/?ride={ride_id}" if ride_id else ""), sent_by=sent_by)
     publish(user_id, "notification", ride_id=str(ride_id) if ride_id else None)
+    return notification

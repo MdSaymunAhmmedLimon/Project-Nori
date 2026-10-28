@@ -5,6 +5,7 @@
 {% block content %}
 <div class="workspace">
   <aside class="sidebar"><div class="user-card"><div class="avatar">{{ user.username|first|upper }}</div><strong>{{ user.first_name|default:user.username }}</strong><span class="role-label">{{ user.get_role_display }} account</span></div>
+    <span class="sidebar-section-label">YOUR WORKSPACE</span>
     <nav class="workspace-nav" aria-label="Dashboard navigation">
       <button type="button" data-tab="ride" class="nav-item active" aria-pressed="true" aria-label="{% if user.role == 'DRIVER' %}Drive{% else %}Book a ride{% endif %}" title="{% if user.role == 'DRIVER' %}Drive{% else %}Book a ride{% endif %}"><span>{% include 'webapp/icon.html' with name='ride' %}</span><span class="nav-label">{% if user.role == 'DRIVER' %}Drive{% else %}Book a ride{% endif %}</span></button>
       <button type="button" data-tab="history" class="nav-item" aria-pressed="false" aria-label="My trips" title="My trips"><span>{% include 'webapp/icon.html' with name='history' %}</span><span class="nav-label">My trips</span></button>
@@ -17,6 +18,7 @@
     </nav><div class="sidebar-note"><span class="status-dot"></span><span id="connection-status">Connecting live updates…</span></div>
   </aside>
   <div class="workspace-main"><div id="toast" role="status" aria-live="polite" hidden></div>
+    <div class="workspace-toolbar"><span class="workspace-context">{% include 'webapp/icon.html' with name='home' %}<span>Workspace <span aria-hidden="true">/</span> <strong>{% if user.role == 'DRIVER' %}Driver{% else %}Rider{% endif %}</strong></span></span><button type="button" id="open-quick-actions" class="quick-actions-trigger" aria-haspopup="dialog"><span aria-hidden="true">⌕</span> Quick actions <kbd>Ctrl K</kbd></button></div>
     <section id="tab-ride" class="tab-panel"><div class="page-heading"><div><div class="eyebrow">{% if user.role == 'DRIVER' %}DRIVER WORKSPACE{% else %}LET'S GET YOU THERE{% endif %}</div><h1>{% if user.role == 'DRIVER' %}Ready when you are.{% else %}Where to, {{ user.first_name|default:user.username }}?{% endif %}</h1><p class="heading-description">{% if user.role == 'DRIVER' %}Manage your availability and find your next trip.{% else %}Your everyday ride, a little easier.{% endif %}</p></div><div class="heading-actions"><span id="availability-badge" class="pill">{% if user.role == 'DRIVER' %}Offline{% else %}Private rides{% endif %}</span><button type="button" class="button secondary small" id="open-safety">{% include 'webapp/icon.html' with name='shield' %} Safety</button></div></div>
       {% if user.role == 'RIDER' %}
       <div class="journey-shortcuts" aria-label="Ride shortcuts">
@@ -49,7 +51,8 @@
             <div id="destination-places" class="places-dropdown" hidden></div>
           </div>
           <div class="booking-route-actions"><button type="button" id="use-pickup-location" class="plain-link location-link">{% include 'webapp/icon.html' with name='locate' %} Use my location</button><button type="button" id="swap-route" class="plain-link" aria-label="Swap pickup and destination">{% include 'webapp/icon.html' with name='swap' %} Swap</button></div>
-          <div id="booking-stops" class="booking-stops" hidden><p id="booking-stops-summary"></p><button type="button" id="clear-booking-stops" class="plain-link">Remove stops</button></div>
+          <div id="booking-stops" class="booking-stops" hidden><p id="booking-stops-summary" class="form-hint" aria-live="polite"></p><ol id="booking-stops-list"></ol><button type="button" id="clear-booking-stops" class="plain-link">Remove all stops</button></div>
+          <button type="button" id="add-booking-stop" class="add-stop-button">+ Add a stop <span>Make room for your plans</span></button>
           <div class="quick-places-container">
             <label class="form-hint" style="display:block;margin-bottom:6px;">Popular destinations:</label>
             <div class="quick-places">
@@ -92,8 +95,23 @@
         <details class="coordinate-details"><summary>Set location manually</summary><form id="driver-location-form"><div class="form-grid"><label>Latitude<input name="latitude" type="number" step="0.000001" min="-90" max="90" required></label><label>Longitude<input name="longitude" type="number" step="0.000001" min="-180" max="180" required></label></div><button class="button secondary full" type="submit">Update location</button></form></details></article>
         <article class="panel" id="offers-panel"><div class="panel-heading"><h2>Nearby requests</h2><span class="live-label"><span class="status-dot"></span>LIVE</span></div><div id="offers-list"><div class="empty-state">Go online to find your next trip.</div></div></article>
       {% endif %}
-      <article class="panel" id="trip-panel" hidden><div id="trip-content"></div><button id="return-active-trip" class="button full" hidden>Return to current trip →</button></article>
-      </div><div class="ride-map-column"><div class="map-panel"><div class="map-caption"><span class="status-dot"></span><span id="map-instruction" role="status">{% if user.role == 'RIDER' %}Choose a pickup to start your journey{% else %}Your city, at a glance{% endif %}</span></div><div id="ride-map" aria-label="Interactive ride map"></div><button type="button" id="map-overview" class="map-overview" aria-label="Show route overview" title="Show route overview">{% include 'webapp/icon.html' with name='locate' %}</button><div class="map-footnote">Map lines connect selected points. They are not turn-by-turn directions.</div></div>{% include 'webapp/top_riders.html' %}</div></div>
+      <article class="panel" id="trip-panel" hidden><div id="trip-content"></div>
+        <details id="trip-chat-panel" class="trip-chat" hidden open>
+          <summary><span id="trip-chat-title">Messages</span><span id="chat-unread" class="count-badge" hidden></span></summary>
+          <div id="trip-chat-log" role="log" aria-label="Ride messages" aria-live="polite" aria-relevant="additions"></div>
+          <p id="trip-chat-status" class="form-hint" role="status"></p>
+          <button type="button" id="chat-retry" class="plain-link" hidden>Retry loading messages</button>
+          <form id="trip-chat-form"><label for="trip-chat-input" class="sr-only">Your message</label><input name="content" id="trip-chat-input" placeholder="Write a message..." maxlength="500" autocomplete="off" required><button type="submit" class="button small">Send</button></form>
+        </details><button id="return-active-trip" class="button full" hidden>Return to current trip →</button></article>
+      </div><div class="ride-map-column"><div class="map-panel"><div class="map-caption"><span class="status-dot"></span><span id="map-instruction" role="status">{% if user.role == 'RIDER' %}Choose a pickup to start your journey{% else %}Your city, at a glance{% endif %}</span></div><div id="ride-map" aria-label="Interactive ride map"></div>
+        <div class="device-controls"><button type="button" id="device-location" class="button secondary small" aria-pressed="false">Show my location</button><button type="button" id="follow-device" class="button secondary small" aria-pressed="false" hidden>Follow me</button><button type="button" id="retry-route" class="button secondary small" hidden>Retry road route</button><span id="device-location-status" role="status">Location is off.</span></div><button type="button" id="map-overview" class="map-overview" aria-label="Show route overview" title="Show route overview">{% include 'webapp/icon.html' with name='locate' %}</button><div class="map-footnote">Road route &middot; Purple: pickup &middot; Blue: you &middot; Green: driver</div></div>
+        <article id="journey-progress" class="panel journey-progress" hidden aria-label="Trip progress"><div class="panel-heading"><div><div class="eyebrow">YOUR JOURNEY, AT A GLANCE</div><h2 id="journey-progress-title"></h2></div><span class="live-label"><span class="status-dot"></span>TRIP</span></div><ol id="journey-progress-steps" class="journey-progress-steps"></ol><div id="journey-estimate" class="journey-estimate" role="status"></div><p class="form-hint">Road travel estimates. Traffic and time spent at stops can affect arrival.</p></article>
+        {% if user.role == 'RIDER' %}
+        <article class="panel journey-hub"><div class="panel-heading"><div><div class="eyebrow">FAMILIAR PLACES. FRESH PLANS.</div><h2>Go there again</h2></div><button type="button" id="recent-trips-history" class="plain-link">All trips ↗</button></div><p class="muted">Your recent journeys, ready for another visit.</p><div id="recent-trips" aria-live="polite"><p class="form-hint">Loading your journeys…</p></div><button type="button" id="retry-recent-trips" class="plain-link" hidden>Try again</button></article>
+        {% else %}
+        <article class="panel driver-readiness"><div class="panel-heading"><div><div class="eyebrow">SET UP FOR A GOOD DAY</div><h2>Ready for the road</h2></div><span id="readiness-count" class="pill"></span></div><ul id="driver-readiness-list" class="readiness-list"></ul><button type="button" id="readiness-profile" class="plain-link">Manage driver profile ↗</button></article>
+        {% endif %}
+      </div></div>
     </section>
     <section id="tab-history" class="tab-panel" hidden>
       <div class="page-heading"><div class="eyebrow">THE PLACES YOU'VE BEEN</div><h1>Your journeys.</h1></div>
@@ -169,6 +187,13 @@
     <noscript><div class="panel">Enable JavaScript to book and manage rides. Account registration and login work without it.</div></noscript>
   </div>
 </div>
+<dialog id="quick-actions-dialog" class="command-dialog" aria-labelledby="quick-actions-title">
+  <div class="panel-heading"><h2 id="quick-actions-title">What would you like to do?</h2><button type="button" data-close-dialog="quick-actions-dialog" class="icon-button" aria-label="Close quick actions">{% include 'webapp/icon.html' with name='close' %}</button></div>
+  <label for="quick-actions-search" class="sr-only">Search actions</label><input type="search" id="quick-actions-search" placeholder="Search trips, profile, safety…" autocomplete="off"><div id="quick-actions-results" class="command-results"></div><p class="form-hint">↑ ↓ to navigate · Enter to open · Esc to close</p>
+</dialog>
+{% if user.role == 'RIDER' %}
+<dialog id="stop-dialog" class="command-dialog" aria-labelledby="stop-dialog-title"><div class="panel-heading"><div><div class="eyebrow">A LITTLE DETOUR</div><h2 id="stop-dialog-title">Add a stop</h2></div><button type="button" data-close-dialog="stop-dialog" class="icon-button" aria-label="Close add stop">{% include 'webapp/icon.html' with name='close' %}</button></div><p class="muted">Choose up to 8 stops between pickup and destination. Your fare includes the full road route.</p><label for="stop-search">Search a place</label><input type="search" id="stop-search" maxlength="200" placeholder="Landmark, neighbourhood or saved place" autocomplete="off"><div id="stop-search-results" class="command-results" aria-live="polite"></div></dialog>
+{% endif %}
 <dialog id="safety-dialog" class="safety-dialog" aria-labelledby="safety-title">
   <div class="panel-heading"><span class="safety-symbol">{% include 'webapp/icon.html' with name='shield' %}</span><button type="button" id="close-safety" class="icon-button" aria-label="Close safety centre">{% include 'webapp/icon.html' with name='close' %}</button></div>
   <div class="eyebrow">PEACE OF MIND, EVERY MILE</div><h2 id="safety-title">Your safety centre</h2><p class="muted">A little preparation makes a better journey.</p>
@@ -182,6 +207,12 @@
   <div class="panel-heading"><span class="gateway-wordmark">SSLCOMMERZ <small>LOCAL DEMO</small></span><button type="button" id="close-demo-checkout" class="icon-button" aria-label="Close demo checkout">{% include 'webapp/icon.html' with name='close' %}</button></div>
   <h2 id="demo-checkout-title">Complete demo payment</h2><p id="demo-checkout-purpose" class="muted"></p><strong id="demo-checkout-amount" class="checkout-amount"></strong><p class="demo-notice">Simulation only. No real money, card numbers, PINs, or OTPs are needed.</p>
   <form id="demo-checkout-form"><fieldset class="gateway-options"><legend>Choose a demo payment option</legend><label><input type="radio" name="channel" value="BKASH" checked><span class="channel-bkash">bKash</span></label><label><input type="radio" name="channel" value="NAGAD"><span class="channel-nagad">Nagad</span></label><label><input type="radio" name="channel" value="CARD"><span>Debit / credit card</span></label><label><input type="radio" name="channel" value="BANK"><span>Internet banking</span></label></fieldset><p id="demo-checkout-status" role="status" aria-live="polite"></p><button type="submit" data-outcome="SUCCESS" class="button full">Simulate successful payment</button><div class="demo-test-actions"><button type="submit" data-outcome="FAILED" class="plain-link">Test failed payment</button><button type="submit" data-outcome="CANCELLED" class="plain-link">Test cancelled payment</button></div></form>
+</dialog>
+<dialog id="cancellation-dialog" class="command-dialog" aria-labelledby="cancellation-title">
+  <div class="panel-heading"><h2 id="cancellation-title">Cancel this ride?</h2><button type="button" class="icon-button" id="close-cancellation" aria-label="Close cancellation review">{% include 'webapp/icon.html' with name='close' %}</button></div>
+  <p class="muted">Review the cost before you confirm. Your driver and rider will receive a trip update.</p>
+  <div class="cancellation-total"><span>Cancellation fee</span><strong id="cancellation-fee"></strong></div><p id="cancellation-policy" class="form-hint"></p>
+  <form id="confirm-cancellation-form"><label for="cancellation-reason">Reason (optional)</label><textarea id="cancellation-reason" name="reason" maxlength="250" rows="3" placeholder="Tell us what changed"></textarea><p id="cancellation-error" class="form-error" role="alert"></p><div class="button-row"><button type="button" id="keep-ride" class="button secondary">Keep my ride</button><button type="submit" class="button danger">Confirm cancellation</button></div></form>
 </dialog>
 {{ app_config|json_script:"app-config" }}
 {% endblock %}

@@ -4,6 +4,7 @@ from . import views
 
 app_name = "rides"
 urlpatterns = [
+    path("route/", views.RouteView.as_view(), name="route"),
     path("places/search/", views.PlaceSearchView.as_view(), name="place-search"),
     path("quotes/", views.QuoteView.as_view(), name="quote"),
     path("", views.RideList.as_view(), name="list"),

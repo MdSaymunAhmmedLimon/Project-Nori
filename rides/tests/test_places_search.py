@@ -1,3 +1,4 @@
+from rides.tests.routing_fixtures import mock_routing
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from rest_framework.test import APIClient
@@ -9,6 +10,7 @@ User = get_user_model()
 
 class PlaceSearchAndBookingTests(TestCase):
     def setUp(self):
+        mock_routing(self)
         self.rider = User.objects.create_user(
             username="places_rider",
             email="places_rider@example.com",

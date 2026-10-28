@@ -46,6 +46,11 @@ INSTALLED_APPS = [
     "payments",
     "webapp",
 ]
+
+AUTHENTICATION_BACKENDS = [
+    "django.contrib.auth.backends.ModelBackend",
+    "accounts.access.PositionBackend",
+]
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
@@ -67,6 +72,7 @@ TEMPLATES = [
                 "django.template.context_processors.request",
                 "django.contrib.auth.context_processors.auth",
                 "django.contrib.messages.context_processors.messages",
+                "webapp.context_processors.workspace_access",
             ],
         },
     },
@@ -100,7 +106,7 @@ REST_FRAMEWORK = {
         "rest_framework.authentication.SessionAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
-    "DEFAULT_THROTTLE_RATES": {"auth": "30/min", "location": "30/min", "rides": "60/min"},
+    "DEFAULT_THROTTLE_RATES": {"auth": "30/min", "location": "30/min", "rides": "60/min", "messages": "60/min"},
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 20,
     "TEST_REQUEST_DEFAULT_FORMAT": "json",
@@ -154,7 +160,8 @@ RIDE_CURRENCY = os.environ.get("RIDE_CURRENCY", "BDT").upper()
 FARE_BASE = os.environ.get("FARE_BASE", "50.00")
 FARE_PER_KM = os.environ.get("FARE_PER_KM", "22.00")
 FARE_MINIMUM = os.environ.get("FARE_MINIMUM", "80.00")
-FARE_ROAD_FACTOR = os.environ.get("FARE_ROAD_FACTOR", "1.3")
+ROUTING_BASE_URL = os.environ.get("ROUTING_BASE_URL", "https://router.project-osrm.org")
+ROUTING_TIMEOUT_SECONDS = float(os.environ.get("ROUTING_TIMEOUT_SECONDS", "8"))
 PLATFORM_FEE_PERCENT = os.environ.get("PLATFORM_FEE_PERCENT", "15")
 MATCH_RADIUS_KM = float(os.environ.get("MATCH_RADIUS_KM", "10"))
 LOCATION_MAX_AGE_SECONDS = 90
@@ -170,7 +177,7 @@ STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
 CARD_PAYMENTS_ENABLED = bool(STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET)
 
-# Password recovery uses SMTP in deployments and a console inbox locally.
+# SOS alerts email operations; local development prints messages to the console.
 EMAIL_BACKEND = os.environ.get("EMAIL_BACKEND", "django.core.mail.backends.smtp.EmailBackend")
 EMAIL_HOST = os.environ.get("EMAIL_HOST", "localhost")
 EMAIL_PORT = int(os.environ.get("EMAIL_PORT", "587"))
@@ -180,7 +187,6 @@ EMAIL_USE_TLS = os.environ.get("EMAIL_USE_TLS", "True").lower() in {"true", "1",
 EMAIL_USE_SSL = os.environ.get("EMAIL_USE_SSL", "False").lower() in {"true", "1", "yes"}
 EMAIL_TIMEOUT = 10
 DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", "Nori <noreply@localhost>")
-PASSWORD_RESET_TIMEOUT = 3600
 SURGE_PRICING_ENABLED = os.environ.get("SURGE_PRICING_ENABLED", "True").lower() in {"true", "1", "yes"}
 ADMINS = [("Operations", os.environ.get("ADMIN_EMAIL", "admin@localhost"))]
 RIDE_CANCELLATION_FEE = os.environ.get("RIDE_CANCELLATION_FEE", "50.00")

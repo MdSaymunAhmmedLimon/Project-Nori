@@ -1,0 +1,9 @@
+{% extends 'webapp/base.html' %}
+{% block title %}{{ title }} · Nori{% endblock %}
+{% block robots %}noindex, nofollow{% endblock %}
+{% block content %}<section class="wrap operations ops-dashboard">
+  <div class="page-heading"><div><div class="eyebrow">NORI WORKSPACE</div><h1>{{ title }}</h1><p class="heading-description">{{ description }}</p></div></div>
+  {% include 'webapp/operations_nav.html' %}
+  <div class="position-form-layout"><form method="post" class="panel position-form">{% csrf_token %}{{ form.non_field_errors }}{% for field in form %}<div class="form-field {% if field.name == 'permissions' %}permission-picker{% endif %}">{% if field.name == 'permissions' %}<fieldset><legend>Granted powers</legend>{{ field }}{{ field.errors }}</fieldset>{% else %}<label for="{{ field.id_for_label }}">{{ field.label }}</label>{{ field }}{{ field.errors }}{% if field.help_text %}<p class="form-hint">{{ field.help_text }}</p>{% endif %}{% endif %}</div>{% endfor %}<button class="button" type="submit">{{ submit_label }} →</button></form>
+  <aside class="panel position-guidance"><div class="eyebrow">CLEAR RESPONSIBILITIES</div><h2>Access, with accountability.</h2><p>Only explicitly selected powers are granted. Permission to view a section does not allow changing its records.</p><p>Every position requires an invitation, acceptance by the recipient, and a final administrator decision.</p><p>A new approved position replaces the previous assigned position.</p>{% if category_previews %}<h3>Available categories</h3>{% for category in category_previews %}<details><summary>{{ category.name }}</summary><p>{{ category.description }}</p><ul>{% for permission in category.permissions %}<li>{{ permission }}</li>{% empty %}<li>No administrative powers.</li>{% endfor %}</ul></details>{% endfor %}{% endif %}</aside></div>
+</section>{% endblock %}

@@ -1,0 +1,13 @@
+<nav class="ops-nav" aria-label="Workspace navigation">
+  <a href="{% url workspace_home %}" {% if not section and request.resolver_match.url_name == 'operations' or request.resolver_match.url_name == 'team-dashboard' %}aria-current="page"{% endif %}>Overview</a>
+  {% if workspace_access.drivers %}<a href="{% url 'webapp:operations-list' 'drivers' %}" {% if section == 'drivers' %}aria-current="page"{% endif %}>Driver approvals</a>{% endif %}
+  {% if workspace_access.rides %}<a href="{% url 'webapp:operations-list' 'rides' %}" {% if section == 'rides' %}aria-current="page"{% endif %}>Rides</a>{% endif %}
+  {% if workspace_access.users %}<a href="{% url 'webapp:operations-list' 'users' %}" {% if section == 'users' %}aria-current="page"{% endif %}>Users</a>{% endif %}
+  {% if workspace_access.payouts %}<a href="{% url 'webapp:operations-list' 'payouts' %}" {% if section == 'payouts' %}aria-current="page"{% endif %}>Payouts</a>{% endif %}
+  {% if workspace_access.safety %}<a href="{% url 'webapp:operations-list' 'support' %}" {% if section == 'support' %}aria-current="page"{% endif %}>Safety &amp; support</a>{% elif workspace_access.lost_items %}<a href="{% url 'webapp:operations-list' 'support' %}?kind=lost">Lost items</a>{% endif %}
+  <a href="{% url 'webapp:positions' %}" {% if request.resolver_match.url_name == 'positions' %}aria-current="page"{% endif %}>{% if workspace_access.positions %}Positions &amp; access{% else %}My invitations{% endif %}</a>
+  <a href="{% url 'webapp:notification-center' %}" {% if request.resolver_match.url_name == 'notification-center' %}aria-current="page"{% endif %}>Notifications</a>
+  {% if workspace_access.notify %}<a href="{% url 'webapp:send-notification' %}">Send notification</a>{% endif %}
+  {% if user.is_superuser %}<a href="{% url 'admin:index' %}">Advanced settings ↗</a>{% endif %}
+</nav>
+{% for message in messages %}<div class="ops-notice {{ message.tags }}" role="status">{{ message }}</div>{% endfor %}

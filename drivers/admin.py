@@ -1,12 +1,36 @@
 from django.contrib import admin
+from django import forms
 from django.utils import timezone
+from rest_framework.exceptions import APIException
 
 from .models import DriverDocument, DriverProfile, PayoutRequest, Vehicle
+from .review import approval_errors, review_driver
+
+
+class DriverReviewAdminForm(forms.ModelForm):
+    class Meta:
+        model = DriverProfile
+        fields = "__all__"
+
+    def clean(self):
+        data = super().clean()
+        if data.get("verification_status") == "APPROVED":
+            if not self.instance.pk or DriverProfile.objects.filter(pk=self.instance.pk).exclude(verification_status="APPROVED").exists():
+                self.add_error("verification_status", "Use Positions & access: invite the driver, obtain acceptance, then complete final approval.")
+            if not self.instance.pk:
+                self.add_error("verification_status", "Save the profile and add a vehicle before approval.")
+            else:
+                self.instance.license_expiry_date = data.get("license_expiry_date") or self.instance.license_expiry_date
+                errors = approval_errors(self.instance)
+                if errors:
+                    self.add_error("verification_status", " ".join(errors))
+        return data
 
 
 
 @admin.register(DriverProfile)
 class DriverProfileAdmin(admin.ModelAdmin):
+    form = DriverReviewAdminForm
     list_display = ("user", "license_number", "license_expiry_date", "verification_status", "is_online")
     list_filter = ("verification_status", "is_online")
     search_fields = ("user__username", "license_number")
@@ -15,7 +39,13 @@ class DriverProfileAdmin(admin.ModelAdmin):
 
     @admin.action(description="Approve selected complete driver profiles")
     def approve_drivers(self, request, queryset):
-        count = queryset.filter(license_expiry_date__gte=timezone.localdate(), vehicle__isnull=False, user__is_active=True).update(verification_status="APPROVED", review_note="")
+        count = 0
+        for profile in queryset:
+            try:
+                review_driver(request.user, profile.pk, decision="APPROVED")
+            except APIException:
+                continue
+            count += 1
         self.message_user(request, f"Approved {count} complete driver profiles.")
 
     def save_model(self, request, obj, form, change):

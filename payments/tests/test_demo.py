@@ -1,3 +1,4 @@
+from rides.tests.routing_fixtures import mock_routing
 import uuid
 from datetime import timedelta
 from decimal import Decimal
@@ -17,6 +18,7 @@ from rides.tests.test_workflow import make_driver
 
 class DemoPaymentTests(APITestCase):
     def setUp(self):
+        mock_routing(self)
         cache.clear()
         self.user = get_user_model().objects.create_user(username='wallet_rider', email='wallet@example.com')
         self.other = get_user_model().objects.create_user(username='other_rider', email='other@example.com')

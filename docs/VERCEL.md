@@ -137,7 +137,9 @@ local SQLite data, logs, screenshots, and the virtual environment from uploads.
 Vercel settings do not load the local `.env` or silently fall back to SQLite.
 Do not point preview deployments at the production database or Redis.
 
-Configure the SMTP variables documented in `.env.example` for password recovery.
+Configure the SMTP variables and `ADMIN_EMAIL` documented in `.env.example`
+for SOS alerts to operations. Password recovery uses account security questions
+and does not require email setup.
 The existing Stripe variables enable optional card payments; cash works without
 Stripe. This deployment does not copy local accounts or trips into PostgreSQL.
 

@@ -2,7 +2,7 @@ from django.conf import settings
 from django.conf.urls.static import static
 from django.contrib import admin
 from django.urls import include, path
-from notifications.views import MarkRead, NotificationList, NotificationSummary
+from notifications.views import MarkRead, MarkOneRead, NotificationList, NotificationSummary
 
 urlpatterns = [
     path("admin/", admin.site.urls),
@@ -13,6 +13,7 @@ urlpatterns = [
     path("api/notifications/", NotificationList.as_view(), name="notifications"),
     path("api/notifications/summary/", NotificationSummary.as_view(), name="notifications-summary"),
     path("api/notifications/read/", MarkRead.as_view(), name="notifications-read"),
+    path("api/notifications/<int:pk>/read/", MarkOneRead.as_view(), name="notification-read"),
     path("", include("webapp.urls")),
 ]
 

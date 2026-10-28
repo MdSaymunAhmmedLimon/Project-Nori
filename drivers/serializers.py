@@ -109,23 +109,30 @@ class DriverDocumentSerializer(serializers.ModelSerializer):
         )
         read_only_fields = ("id", "review_status", "review_note", "uploaded_at", "reviewed_at")
 
+    @transaction.atomic
     def create(self, validated_data):
-        from rides.services import Conflict
         user = self.context["request"].user
         try:
-            profile = DriverProfile.objects.get(user=user)
+            profile = DriverProfile.objects.select_for_update().get(user=user)
         except DriverProfile.DoesNotExist as exc:
             raise serializers.ValidationError(
                 {"detail": "Create your driver profile first."}
             ) from exc
+        require_editable_driver(user)
+        profile.verification_status = "PENDING"
+        profile.is_online = False
+        profile.review_note = "Verification documents changed; review required."
+        profile.save(update_fields=["verification_status", "is_online", "review_note", "updated_at"])
         # Replace existing document of same type instead of raising integrity error
         existing = DriverDocument.objects.filter(driver=profile, doc_type=validated_data["doc_type"]).first()
         if existing:
+            from django.utils import timezone
             existing.file = validated_data["file"]
+            existing.uploaded_at = timezone.now()
             existing.review_status = DriverDocument.ReviewStatus.PENDING
             existing.review_note = ""
             existing.reviewed_at = None
-            existing.save(update_fields=["file", "review_status", "review_note", "reviewed_at"])
+            existing.save(update_fields=["file", "uploaded_at", "review_status", "review_note", "reviewed_at"])
             return existing
         return DriverDocument.objects.create(driver=profile, **validated_data)
 

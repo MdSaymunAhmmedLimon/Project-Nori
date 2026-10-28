@@ -30,6 +30,10 @@ class StopInputSerializer(WritableFieldsOnlyMixin, serializers.Serializer):
     longitude = serializers.DecimalField(max_digits=9, decimal_places=6, min_value=-180, max_value=180)
 
 
+class RouteInputSerializer(WritableFieldsOnlyMixin, serializers.Serializer):
+    coordinates = CoordinatesSerializer(many=True, min_length=2, max_length=10)
+
+
 class RideStopSerializer(serializers.ModelSerializer):
     class Meta:
         model = RideStop
@@ -52,7 +56,7 @@ class QuoteInputSerializer(WritableFieldsOnlyMixin, serializers.Serializer):
     destination_latitude = serializers.DecimalField(max_digits=9, decimal_places=6, min_value=-90, max_value=90, required=False)
     destination_longitude = serializers.DecimalField(max_digits=9, decimal_places=6, min_value=-180, max_value=180, required=False)
     vehicle_class = serializers.ChoiceField(choices=["STANDARD", "COMFORT", "XL", "MOTO"], default="STANDARD", required=False)
-    stops = StopInputSerializer(many=True, required=False, default=list)
+    stops = StopInputSerializer(many=True, required=False, default=list, max_length=8)
 
     def validate(self, attrs):
         from .places import resolve_location_name
@@ -98,6 +102,7 @@ class RequestRideSerializer(WritableFieldsOnlyMixin, serializers.Serializer):
 
 
 class ActionSerializer(WritableFieldsOnlyMixin, serializers.Serializer):
+    expected_cancellation_fee = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=0, required=False)
     action = serializers.ChoiceField(choices=["arriving", "arrived", "start", "complete", "cancel"])
     reason = serializers.CharField(max_length=300, required=False, allow_blank=True, default="")
 

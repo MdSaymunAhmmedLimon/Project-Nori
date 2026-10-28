@@ -6,7 +6,7 @@ from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
-from .models import DriverProfile, PayoutRequest, Vehicle
+from .models import DriverProfile, Vehicle
 from .permissions import IsDriver
 from .serializers import (
     DriverDocumentSerializer, DriverProfileSerializer,

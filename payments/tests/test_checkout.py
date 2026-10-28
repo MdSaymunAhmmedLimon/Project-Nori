@@ -1,3 +1,4 @@
+from rides.tests.routing_fixtures import mock_routing
 import hashlib
 import hmac
 import json
@@ -23,6 +24,7 @@ from rides.tests.test_workflow import make_driver
 @override_settings(CARD_PAYMENTS_ENABLED=True)
 class CheckoutTests(APITestCase):
     def setUp(self):
+        mock_routing(self)
         cache.clear()
         self.rider = get_user_model().objects.create_user(username="rider", email="rider@example.com")
         self.driver = make_driver("driver")

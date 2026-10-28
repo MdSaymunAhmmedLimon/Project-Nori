@@ -1,6 +1,6 @@
 from django.conf import settings
 from django.contrib.auth import login
-from django.contrib.auth.decorators import login_required, user_passes_test
+from django.contrib.auth.decorators import login_required
 from django.contrib.auth.views import LoginView
 from django.core.cache import cache
 from django.db.models import Q, Sum
@@ -33,6 +33,13 @@ class WebLoginView(LoginView):
     template_name = "webapp/login.html"
     redirect_authenticated_user = True
 
+    def get_success_url(self):
+        if not self.get_redirect_url():
+            from accounts.access import dashboard_url
+            from django.urls import reverse
+            return reverse(dashboard_url(self.request.user))
+        return super().get_success_url()
+
     def post(self, request, *args, **kwargs):
         if auth_limited(request):
             return render(request, self.template_name, {"form": self.get_form(), "rate_error": "Too many attempts. Please wait a minute."}, status=429)
@@ -60,7 +67,7 @@ def register(request):
             except ValidationError:
                 form.add_error(None, "That username or email was just registered. Please choose another.")
             else:
-                login(request, user)
+                login(request, user, backend="django.contrib.auth.backends.ModelBackend")
                 return redirect("webapp:dashboard")
     return render(request, "webapp/register.html", {"form": form})
 
@@ -68,6 +75,10 @@ def register(request):
 @login_required
 @ensure_csrf_cookie
 def dashboard(request):
+    from accounts.access import dashboard_url
+    destination = dashboard_url(request.user)
+    if destination != "webapp:dashboard" and request.GET.get("workspace") != "personal":
+        return redirect(destination)
     config = {
         "user": {"id": request.user.pk, "role": request.user.role, "name": request.user.get_full_name() or request.user.username},
         "currency": settings.RIDE_CURRENCY, "cardPayments": settings.CARD_PAYMENTS_ENABLED,
@@ -101,13 +112,19 @@ def shared_trip(request, token):
     return render(request, "webapp/shared_trip.html", {"share_token": token})
 
 
-@user_passes_test(lambda user: user.is_active and user.is_staff)
+@login_required
+@never_cache
+@require_http_methods(["GET", "HEAD"])
 def operations(request):
+    from accounts.access import can_view
+    from django.core.exceptions import PermissionDenied
+    if not can_view(request.user, "accounts.view_operations"):
+        raise PermissionDenied
     from rides.models import LostItem, SOSAlert, SurgePricingRule, Ride, ACTIVE_STATUSES
-    from drivers.models import DriverProfile, DriverDocument
+    from drivers.models import DriverProfile
     from payments.models import Payment
     from accounts.models import User
-    from django.db.models import Avg, Count, Q, Sum, F
+    from django.db.models import Count, Q, Sum
     from django.db.models.functions import TruncDate
     from django.utils import timezone
     import datetime

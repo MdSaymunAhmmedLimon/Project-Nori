@@ -14,7 +14,7 @@ from rest_framework.views import APIView
 
 from . import services, support
 from .models import (
-    ACTIVE_STATUSES, CarpoolPassenger, CarpoolRide, FavouriteDriver, LostItem, Ride, RideOffer,
+    ACTIVE_STATUSES, CarpoolRide, FavouriteDriver, LostItem, Ride, RideOffer,
     SavedPlace, ScheduledRide, SOSAlert, TripShareToken,
 )
 from .reporting import filter_history
@@ -24,7 +24,7 @@ from .serializers import (
     CarpoolPassengerSerializer, CarpoolRideSerializer, OfferSerializer,
     FavouriteDriverSerializer, LostItemInputSerializer, LostItemSerializer,
     PlaceItemSerializer, PromoValidateSerializer, QuoteInputSerializer,
-    QuoteSerializer, RatingInputSerializer, RatingSerializer,
+    QuoteSerializer, RatingInputSerializer, RatingSerializer, RouteInputSerializer,
     RequestRideSerializer, RescheduleRideInputSerializer, RideMessageInputSerializer, RideMessageSerializer,
     RideSerializer, RideTipInputSerializer, RideTipSerializer,
     SavedPlaceInputSerializer, SavedPlaceSerializer,
@@ -46,6 +46,18 @@ class PlaceSearchView(APIView):
         q = request.query_params.get("q", "")
         results = search_places(q, user=request.user)
         return Response(PlaceItemSerializer(results, many=True).data)
+
+
+class RouteView(APIView):
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "rides"
+
+    def post(self, request):
+        from .routing import get_road_route
+        serializer = RouteInputSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        points = serializer.validated_data["coordinates"]
+        return Response(get_road_route([(p["latitude"], p["longitude"]) for p in points]))
 
 
 class QuoteView(APIView):
@@ -139,6 +151,9 @@ class RideDetail(generics.RetrieveAPIView):
 
 
 class RideAction(APIView):
+    def get(self, request, pk):
+        return Response(services.cancellation_preview(request.user, pk))
+
     def post(self, request, pk):
         serializer = ActionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -341,6 +356,9 @@ class RideTipView(APIView):
 
 
 class RideMessagesView(APIView):
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "messages"
+
     def get(self, request, pk):
         ride = own_rides(request.user).only("id").filter(pk=pk).first()
         if not ride:

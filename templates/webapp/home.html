@@ -4,9 +4,9 @@
 {% block content %}
 <section class="hero wrap{% if user.is_authenticated %} hero-with-riders{% endif %}">
   <div class="hero-copy">
-    <div class="eyebrow"><span class="status-dot"></span> A BETTER WAY TO GO</div>
+    <div class="eyebrow hero-kicker"><span class="status-dot"></span> EVERYDAY JOURNEYS, REIMAGINED</div>
     <h1>Life moves.<br><em>Go with Nori.</em></h1>
-    <p class="hero-description">The office. The airport. Your favourite people.<br>Wherever life takes you, find a ride that fits.</p>
+    <p class="hero-description">From your first meeting to your last stop.<br>Go where life takes you, with a ride that fits.</p>
     <div class="home-booking-card">
       <div class="home-booking-title">{% include 'webapp/icon.html' with name='ride' %}<strong>Your next ride starts here</strong></div>
       <a class="destination-prompt" href="{% url 'webapp:dashboard' %}"><span class="location-dot destination"></span><span>Where are you going?</span>{% include 'webapp/icon.html' with name='arrow' %}</a>
@@ -23,8 +23,8 @@
   </div>
   {% if user.is_authenticated %}{% include 'webapp/top_riders.html' %}{% endif %}
 </section>
-<section class="services-section wrap" aria-labelledby="services-title">
-  <div class="section-heading"><div><div class="eyebrow">ONE CITY. YOUR KIND OF RIDE.</div><h2 id="services-title">A little more you.</h2></div><p>Different plans. The same easy start.</p></div>
+<section class="services-section wrap" id="ride-options" aria-labelledby="services-title">
+  <div class="section-heading"><div><div class="eyebrow">A RIDE FOR EVERY OCCASION</div><h2 id="services-title">Your plans. Your kind of ride.</h2></div><p>Everyday essentials to a little extra comfort.</p></div>
   <div class="service-grid">
     <a class="service-card" href="{% url 'webapp:dashboard' %}?vehicle=STANDARD"><span class="service-tag">THE EVERYDAY GO-TO</span>{% include 'webapp/vehicle_art.html' with kind='STANDARD' %}<h3>Nori Car <span>↗</span></h3><p>A private sedan for your daily plans.</p></a>
     <a class="service-card" href="{% url 'webapp:dashboard' %}?vehicle=MOTO"><span class="service-tag">TRAVEL LIGHT</span>{% include 'webapp/vehicle_art.html' with kind='MOTO' %}<h3>Nori Moto <span>↗</span></h3><p>Two wheels. One easy way across town.</p></a>

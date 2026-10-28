@@ -121,7 +121,7 @@ def request_payout(user, *, amount, payout_method, account_details):
 @transaction.atomic
 def process_payout(staff_user, payout_id, *, action, admin_note=""):
     """Staff processes a payout request."""
-    if not staff_user.is_staff:
+    if not staff_user.is_active or not staff_user.has_perm("drivers.change_payoutrequest"):
         raise PermissionDenied("Only staff can process payout requests.")
 
     payout = PayoutRequest.objects.select_for_update().filter(pk=payout_id).first()

@@ -15,16 +15,17 @@
   <link rel="icon" href="{% static 'webapp/mark.svg' %}" type="image/svg+xml">
   <link rel="stylesheet" href="{% static 'webapp/style.css' %}">
   <link rel="stylesheet" href="{% static 'webapp/professional.css' %}">
+  <link rel="stylesheet" href="{% static 'webapp/experience.css' %}">
   {% block head %}{% endblock %}
 </head>
 <body class="{% block body_class %}{% endblock %}">
   <a class="skip-link" href="#main">Skip to content</a>
   <header class="site-header">
-    <a class="brand" href="{% url 'webapp:home' %}" aria-label="Nori home"><span class="brand-mark">n</span>nori<span class="brand-dot">.</span></a>
+    <div class="header-brand"><a class="brand" href="{% url 'webapp:home' %}" aria-label="Nori home"><span class="brand-mark">n</span>nori<span class="brand-dot">.</span></a><span class="header-divider" aria-hidden="true"></span><span class="header-caption">{% if workspace_access.overview %}Operations{% elif workspace_position %}{{ workspace_position.invitation.category_name }}{% elif user.is_authenticated %}Your everyday journey{% else %}Move through life{% endif %}</span></div>
     <nav id="site-nav" aria-label="Main navigation">
       {% if user.is_authenticated %}
-        <a href="{% url 'webapp:dashboard' %}">My dashboard</a>
-        {% if user.is_staff %}<a href="{% url 'webapp:operations' %}">Operations</a>{% endif %}
+        <a href="{% url workspace_home %}"{% if request.resolver_match.url_name == 'dashboard' %} aria-current="page"{% endif %}>My dashboard</a>
+        <a href="{% url 'webapp:positions' %}">{% if workspace_access.positions %}Positions &amp; access{% else %}My invitations{% endif %}</a>
         <form method="post" action="{% url 'webapp:logout' %}" class="inline-form">{% csrf_token %}<button class="text-button" type="submit">Log out</button></form>
       {% else %}
         <a href="{% url 'webapp:register' %}?role=driver" class="driver-link">Become a driver <span aria-hidden="true">↗</span></a>
@@ -32,11 +33,29 @@
         <a href="{% url 'webapp:register' %}" class="button small">Get started <span aria-hidden="true">↗</span></a>
       {% endif %}
     </nav>
+    {% if user.is_authenticated %}<a class="header-notifications" id="notification-bell" href="{% url 'webapp:notification-center' %}" aria-label="Notifications, {{ notification_unread }} unread">{% include 'webapp/icon.html' with name='notifications' %}<span data-unread-badge {% if not notification_unread %}hidden{% endif %}>{{ notification_unread }}</span></a>{% endif %}
     <button class="nav-toggle" id="nav-toggle" aria-label="Toggle navigation" aria-expanded="false" aria-controls="site-nav">{% include 'webapp/icon.html' with name='menu' %}</button>
   </header>
   <main id="main">{% block content %}{% endblock %}</main>
   {% include 'webapp/developer_credit.html' %}
-  <script>document.getElementById('nav-toggle')?.addEventListener('click',function(){var nav=document.getElementById('site-nav');var open=nav.classList.toggle('open');this.setAttribute('aria-expanded',open);});</script>
+  <script>
+    (() => {
+      const toggle = document.getElementById('nav-toggle');
+      const nav = document.getElementById('site-nav');
+      function closeNavigation() { nav.classList.remove('open'); toggle.setAttribute('aria-expanded', 'false'); }
+      toggle.addEventListener('click', () => {
+        const open = nav.classList.toggle('open');
+        toggle.setAttribute('aria-expanded', String(open));
+      });
+      document.addEventListener('keydown', event => {
+        if (event.key === 'Escape' && nav.classList.contains('open')) { closeNavigation(); toggle.focus(); }
+      });
+      document.addEventListener('click', event => {
+        if (!nav.contains(event.target) && !toggle.contains(event.target)) closeNavigation();
+      });
+    })();
+  </script>
   {% block scripts %}{% endblock %}
+  {% if user.is_authenticated %}<script src="{% static 'webapp/notifications.js' %}" defer></script>{% endif %}
 </body>
 </html>

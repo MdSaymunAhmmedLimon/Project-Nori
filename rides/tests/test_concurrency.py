@@ -1,3 +1,4 @@
+from rides.tests.routing_fixtures import mock_routing
 import uuid
 from datetime import timedelta
 from concurrent.futures import ThreadPoolExecutor
@@ -45,6 +46,7 @@ class PostgreSQLConcurrencyTests(TransactionTestCase):
         self.assertEqual(Ride.objects.count(), int(bool(reservation.ride_id)))
 
     def setUp(self):
+        mock_routing(self)
         self.rider = get_user_model().objects.create_user(username="rider", email="rider@example.com")
         self.driver = make_driver("first_driver")
         self.other_driver = make_driver("second_driver")

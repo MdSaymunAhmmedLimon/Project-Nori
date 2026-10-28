@@ -1,3 +1,4 @@
+from rides.tests.routing_fixtures import mock_routing
 import uuid
 from datetime import datetime, timedelta, timezone as dt_timezone
 from unittest.mock import patch
@@ -15,6 +16,7 @@ from rides.services import dispatch_due_scheduled_rides, dispatch_scheduled_ride
 
 class SchedulingTests(APITestCase):
     def setUp(self):
+        mock_routing(self)
         cache.clear()
         self.rider = get_user_model().objects.create_user(username="planner", email="planner@example.com", role="RIDER")
         self.other = get_user_model().objects.create_user(username="other", email="other@example.com", role="RIDER")

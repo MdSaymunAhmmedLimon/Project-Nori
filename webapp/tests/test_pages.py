@@ -59,7 +59,7 @@ class WebTests(TestCase):
 
     def test_operations_requires_staff(self):
         self.client.force_login(self.user)
-        self.assertEqual(self.client.get("/operations/").status_code, 302)
+        self.assertEqual(self.client.get("/operations/").status_code, 403)
         self.user.is_staff = True
         self.user.save()
         self.assertEqual(self.client.get("/operations/").status_code, 200)

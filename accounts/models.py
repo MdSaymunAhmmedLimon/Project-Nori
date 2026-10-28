@@ -136,3 +136,87 @@ class EmergencyContact(models.Model):
     def __str__(self):
         return f"{self.name} ({self.relationship}) - {self.user.username}"
 
+
+class PositionCategory(models.Model):
+    class Dashboard(models.TextChoices):
+        ADMIN = "ADMIN", "Administrator"
+        MODERATOR = "MODERATOR", "Moderator"
+        TEAM = "TEAM", "Custom team"
+        DRIVER = "DRIVER", "Driver"
+
+    name = models.CharField(max_length=80, unique=True)
+    description = models.CharField(max_length=500, blank=True)
+    dashboard = models.CharField(max_length=12, choices=Dashboard.choices, default=Dashboard.TEAM)
+    permissions = models.JSONField(default=list)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="created_categories")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["name"]
+        constraints = [models.UniqueConstraint(Lower("name"), name="position_category_name_ci")]
+        permissions = [
+            ("manage_positions", "Manage categories, invitations and final approvals"),
+            ("send_notifications", "Send account notifications"),
+            ("view_operations", "View operations overview and financial summaries"),
+            ("cancel_operational_ride", "Cancel a trip before it starts as an operator"),
+        ]
+
+    def __str__(self):
+        return self.name
+
+
+class PositionInvitation(models.Model):
+    class Status(models.TextChoices):
+        INVITED = "INVITED", "Awaiting acceptance"
+        ACCEPTED = "ACCEPTED", "Awaiting final review"
+        APPROVED = "APPROVED", "Approved"
+        REJECTED = "REJECTED", "Rejected"
+        DECLINED = "DECLINED", "Declined by user"
+        WITHDRAWN = "WITHDRAWN", "Withdrawn by admin"
+        EXPIRED = "EXPIRED", "Expired"
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="position_invitations")
+    category = models.ForeignKey(PositionCategory, on_delete=models.PROTECT)
+    category_name = models.CharField(max_length=80)
+    dashboard = models.CharField(max_length=12, choices=PositionCategory.Dashboard.choices)
+    permissions = models.JSONField(default=list)
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.INVITED)
+    invited_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="sent_position_invitations")
+    note = models.CharField(max_length=500, blank=True)
+    acceptance_note = models.CharField(max_length=500, blank=True)
+    review_note = models.CharField(max_length=500, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    accepted_at = models.DateTimeField(null=True, blank=True)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    reviewed_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT, related_name="reviewed_position_invitations")
+
+    class Meta:
+        ordering = ["-created_at", "-pk"]
+        constraints = [models.UniqueConstraint(fields=["user"], condition=models.Q(status__in=["INVITED", "ACCEPTED"]), name="one_pending_position_per_user")]
+
+    @property
+    def expired(self):
+        from django.utils import timezone
+        return self.status in {self.Status.INVITED, self.Status.ACCEPTED} and self.expires_at <= timezone.now()
+
+
+class PositionAssignment(models.Model):
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="position")
+    invitation = models.OneToOneField(PositionInvitation, on_delete=models.PROTECT)
+    granted_at = models.DateTimeField(auto_now=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    revoked_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT, related_name="revoked_positions")
+    revoke_reason = models.CharField(max_length=500, blank=True)
+
+
+class PositionEvent(models.Model):
+    invitation = models.ForeignKey(PositionInvitation, on_delete=models.PROTECT, related_name="events")
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    action = models.CharField(max_length=20)
+    note = models.CharField(max_length=500, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at", "pk"]
+

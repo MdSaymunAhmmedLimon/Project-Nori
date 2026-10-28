@@ -4,7 +4,7 @@ import stripe
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
-from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
+from rest_framework.exceptions import NotFound, ValidationError
 
 from notifications.services import notify
 from rides.services import Conflict

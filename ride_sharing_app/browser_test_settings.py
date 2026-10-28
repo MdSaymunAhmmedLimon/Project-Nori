@@ -6,3 +6,4 @@ DATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": os.envi
 DEBUG = True
 ALLOWED_HOSTS = ["127.0.0.1", "localhost", "testserver"]
 CARD_PAYMENTS_ENABLED = False
+MEDIA_ROOT = Path(os.environ["BROWSER_TEST_DB"]).parent / "media"

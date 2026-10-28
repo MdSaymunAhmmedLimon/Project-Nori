@@ -20,6 +20,7 @@ class RideQuote(models.Model):
     destination_longitude = models.DecimalField(max_digits=9, decimal_places=6)
     distance_km = models.DecimalField(max_digits=8, decimal_places=2)
     estimated_minutes = models.PositiveIntegerField()
+    route_geometry = models.JSONField(default=dict, blank=True)
     fare = models.DecimalField(max_digits=10, decimal_places=2)
     platform_fee = models.DecimalField(max_digits=10, decimal_places=2)
     currency = models.CharField(max_length=3)

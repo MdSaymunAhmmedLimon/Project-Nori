@@ -1,3 +1,4 @@
+from rides.tests.routing_fixtures import mock_routing
 from datetime import timedelta
 from decimal import Decimal
 import uuid
@@ -14,8 +15,8 @@ from rest_framework.test import APITestCase
 from drivers.models import DriverProfile, Vehicle
 from payments.models import Payment
 from rides.models import (
-    CarpoolPassenger, CarpoolRide, PromoCode, PromoUsage, Ride,
-    RideQuote, ScheduledRide, SOSAlert, SurgePricingRule,
+    CarpoolRide, PromoCode, PromoUsage, Ride,
+    RideQuote, ScheduledRide, SurgePricingRule,
 )
 
 User = get_user_model()
@@ -33,6 +34,8 @@ class RidesNewFeaturesTests(APITestCase):
         cls.staff_user = User.objects.create_user(
             username="staff_user", email="staff@example.com", password="password123", is_staff=True
         )
+        from django.contrib.auth.models import Permission
+        cls.staff_user.user_permissions.add(Permission.objects.get(content_type__app_label="rides", codename="change_sosalert"))
         cls.profile = DriverProfile.objects.create(
             user=cls.driver,
             license_number="DL-RIDE-TEST",
@@ -54,6 +57,7 @@ class RidesNewFeaturesTests(APITestCase):
         )
 
     def setUp(self):
+        mock_routing(self)
         cache.clear()
 
     def create_quote(self, user=None, fare=Decimal("150.00"), surge_multiplier=Decimal("1.00")):

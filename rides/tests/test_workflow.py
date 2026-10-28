@@ -1,4 +1,4 @@
-import secrets
+from rides.tests.routing_fixtures import mock_routing
 import uuid
 from datetime import timedelta
 
@@ -38,6 +38,7 @@ class RideWorkflowTests(APITestCase):
         cls.other_driver = make_driver("other_driver")
 
     def setUp(self):
+        mock_routing(self)
         cache.clear()
         self.client.force_authenticate(self.rider)
         self.route = {"pickup_label": "Banani", "destination_label": "Gulshan",

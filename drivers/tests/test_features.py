@@ -1,6 +1,5 @@
 from datetime import timedelta
 from decimal import Decimal
-import secrets
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache

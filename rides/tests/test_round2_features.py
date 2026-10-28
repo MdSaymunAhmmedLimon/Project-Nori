@@ -1,3 +1,4 @@
+from rides.tests.routing_fixtures import mock_routing
 from datetime import timedelta
 from decimal import Decimal
 import uuid
@@ -9,10 +10,10 @@ from django.utils import timezone
 from rest_framework.test import APITestCase
 
 from accounts.models import Referral, ReferralCode
-from drivers.models import DriverProfile, PayoutRequest, Vehicle
+from drivers.models import DriverProfile, Vehicle
 from payments.models import Payment
 from rides.models import (
-    Ride, RideMessage, RideQuote, RideStop, RideTip, SavedPlace,
+    Ride, RideQuote, RideTip, SavedPlace,
 )
 
 User = get_user_model()
@@ -30,6 +31,8 @@ class Round2FeaturesTests(APITestCase):
         cls.staff = User.objects.create_user(
             username="round2_staff", email="r2_staff@example.com", password="password123", is_staff=True
         )
+        from django.contrib.auth.models import Permission
+        cls.staff.user_permissions.add(Permission.objects.get(content_type__app_label="drivers", codename="change_payoutrequest"))
         cls.profile = DriverProfile.objects.create(
             user=cls.driver,
             license_number="DL-R2-TEST",
@@ -52,6 +55,7 @@ class Round2FeaturesTests(APITestCase):
         )
 
     def setUp(self):
+        mock_routing(self)
         cache.clear()
 
     def create_ride(self, status=Ride.Status.COMPLETED):

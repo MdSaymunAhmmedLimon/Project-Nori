@@ -2,16 +2,19 @@
 
 {% block title %}Operations · Nori{% endblock %}
 
+{% block robots %}noindex, nofollow{% endblock %}
 {% block content %}
-<section class="wrap operations">
+<section class="wrap operations ops-dashboard">
   <!-- Header Banner -->
   <div class="page-heading">
     <div>
       <div class="eyebrow"><span class="status-dot"></span>THE BIG PICTURE</div>
-      <h1>Your network, in motion.</h1>
+      <h1>Admin dashboard</h1>
     </div>
-    <a class="button" href="/admin/">Open administration ↗</a>
+    <a class="button" href="/operations/drivers/">Review drivers ↗</a>
   </div>
+
+  {% include 'webapp/operations_nav.html' %}
 
   <!-- Section A: Top metrics row (expanded) -->
   <div class="metrics" style="grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));">
@@ -38,7 +41,7 @@
     <article class="metric">
       <span>Drivers awaiting review</span>
       <strong>{{ pending_count }}</strong>
-      <a href="/admin/drivers/driverprofile/?verification_status__exact=PENDING">Review profiles &rarr;</a>
+      <a href="/operations/drivers/">Review profiles &rarr;</a>
     </article>
     <article class="metric">
       <span>Unresolved SOS alerts</span>
@@ -193,7 +196,7 @@
         <h2>Driver verification queue</h2>
         <p class="muted" style="margin-bottom: 0;">Driver registrations awaiting document verification and approval</p>
       </div>
-      <a class="plain-link" href="/admin/drivers/driverprofile/?verification_status__exact=PENDING">Review all in admin &rarr;</a>
+      <a class="plain-link" href="/operations/drivers/">View all applications &rarr;</a>
     </div>
 
     {% if pending_drivers %}
@@ -232,7 +235,7 @@
         </div>
 
         <div style="border-top: 1px solid var(--line); padding-top: 12px; margin-top: auto;">
-          <a class="button small secondary full" href="/admin/drivers/driverprofile/{{ driver.pk }}/change/">Review in admin &rarr;</a>
+          <a class="button small secondary full" href="/operations/drivers/{{ driver.pk }}/">Review application &rarr;</a>
         </div>
       </div>
       {% endfor %}
